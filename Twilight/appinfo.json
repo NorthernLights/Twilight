@@ -1,0 +1,17 @@
+{
+  "id": "com.twilightstream.client",
+  "version": "1.0.0",
+  "vendor": "Twilight",
+  "type": "web",
+  "main": "index.html",
+  "title": "Twilight",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "allowCrossDomain": true,
+  "allowMediaAudio": true,
+  "requiredPermissions": [
+    "MEDIA_OPERATION",
+    "MEDIA_CONTROLLER",
+    "SYSTEMSERVICE"
+  ]
+}

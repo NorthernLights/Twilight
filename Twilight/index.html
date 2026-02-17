@@ -1,0 +1,309 @@
+<!--
+  Copyright (c) 2025 Twilight Contributors
+  SPDX-License-Identifier: Apache-2.0
+
+  Twilight – Moonlight Streaming Client for LG webOS TV
+  Single-Page Application shell. All screens live here as <section> elements;
+  js/app.js drives which one is visible.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920">
+  <title>Twilight</title>
+  <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ═══════════════════════════════════════════════
+       SCREEN: HOST DISCOVERY  (default / home)
+       ═══════════════════════════════════════════════ -->
+  <section id="screen-hosts" class="screen" data-screen="hosts">
+
+    <header class="screen-header">
+      <div class="header-logo">
+        <span class="logo-mark">◈</span>
+        <span class="logo-wordmark">Twilight</span>
+      </div>
+      <div class="header-actions">
+        <button class="btn-icon focusable"
+                data-action="settings"
+                data-nav-id="btn-settings"
+                tabindex="0"
+                aria-label="Settings">⚙</button>
+      </div>
+    </header>
+
+    <main class="screen-content">
+      <div class="section-label">
+        <h2>Game Hosts</h2>
+        <span class="subtitle">Select a host to browse games</span>
+      </div>
+
+      <div id="host-grid" class="host-grid">
+        <!-- Host cards injected by host-discovery.js -->
+        <div class="host-card host-card-add focusable"
+             data-action="add-host"
+             data-nav-id="btn-add-host"
+             tabindex="0">
+          <span class="add-icon">+</span>
+          <span class="add-label">Add Host</span>
+        </div>
+      </div>
+
+      <div id="host-empty" class="state-empty hidden">
+        <div class="state-empty-icon">📡</div>
+        <h3>No Hosts Added</h3>
+        <p>Press <strong>Add Host</strong> to connect to a GameStream or Sunshine server.</p>
+      </div>
+    </main>
+
+    <footer class="screen-footer">
+      <div class="hint"><span class="key-hint">OK</span> Select</div>
+      <div class="hint"><span class="key-hint">⚙</span> Settings</div>
+    </footer>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════
+       SCREEN: APP LIST
+       ═══════════════════════════════════════════════ -->
+  <section id="screen-apps" class="screen" data-screen="apps">
+
+    <header class="screen-header">
+      <button class="btn-icon focusable"
+              data-action="back"
+              data-nav-id="btn-apps-back"
+              tabindex="0"
+              aria-label="Back">←</button>
+      <div class="header-info">
+        <h1 id="apps-host-name" class="screen-title">Games</h1>
+        <span id="apps-host-status" class="badge badge-online">Online</span>
+      </div>
+      <div class="header-actions">
+        <button class="btn-icon focusable"
+                data-action="refresh-apps"
+                data-nav-id="btn-refresh-apps"
+                tabindex="0"
+                aria-label="Refresh">↻</button>
+      </div>
+    </header>
+
+    <main class="screen-content">
+      <div id="apps-loading" class="state-loading hidden">
+        <div class="spinner"></div>
+        <p>Loading games…</p>
+      </div>
+
+      <div id="app-grid" class="app-grid"></div>
+
+      <div id="apps-empty" class="state-empty hidden">
+        <div class="state-empty-icon">🎮</div>
+        <h3>No Games Found</h3>
+        <p>No apps are available on this host.</p>
+      </div>
+    </main>
+
+    <footer class="screen-footer">
+      <div class="hint"><span class="key-hint">OK</span> Launch</div>
+      <div class="hint"><span class="key-hint">←</span> Back</div>
+    </footer>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════
+       SCREEN: STREAMING
+       ═══════════════════════════════════════════════ -->
+  <section id="screen-stream" class="screen fullscreen" data-screen="stream">
+
+    <video id="stream-video" autoplay playsinline></video>
+
+    <!-- Pause overlay – shown when BACK is pressed during a stream -->
+    <div id="stream-overlay" class="stream-overlay hidden">
+      <div class="stream-overlay-box">
+        <h2>Stream Paused</h2>
+        <div class="stream-actions">
+          <button class="btn btn-primary focusable"
+                  data-action="resume-stream"
+                  data-nav-id="btn-resume"
+                  tabindex="0">&#9654; Resume</button>
+          <button class="btn btn-danger focusable"
+                  data-action="stop-stream"
+                  data-nav-id="btn-stop"
+                  tabindex="0">&#9632; Stop</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════
+       SCREEN: PAIRING
+       ═══════════════════════════════════════════════ -->
+  <section id="screen-pairing" class="screen" data-screen="pairing">
+
+    <header class="screen-header">
+      <button class="btn-icon focusable"
+              data-action="cancel-pairing"
+              data-nav-id="btn-pairing-back"
+              tabindex="0"
+              aria-label="Cancel">←</button>
+      <h1 class="screen-title">Pair with Host</h1>
+    </header>
+
+    <main class="screen-content centered">
+      <div class="pairing-card">
+        <div class="pairing-icon">&#128279;</div>
+        <h2 id="pairing-host-name">Host</h2>
+        <p class="pairing-instruction">Enter this PIN on your host computer:</p>
+
+        <div class="pin-display">
+          <span class="pin-digit">-</span>
+          <span class="pin-digit">-</span>
+          <span class="pin-digit">-</span>
+          <span class="pin-digit">-</span>
+        </div>
+
+        <div id="pairing-status" class="pairing-status">
+          <div class="spinner"></div>
+          <p id="pairing-status-msg">Waiting for pairing confirmation…</p>
+        </div>
+
+        <div class="timeout-track">
+          <div id="timeout-fill" class="timeout-fill"></div>
+        </div>
+      </div>
+
+      <button class="btn btn-secondary focusable"
+              data-action="cancel-pairing"
+              data-nav-id="btn-cancel-pairing"
+              tabindex="0">Cancel</button>
+    </main>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════
+       SCREEN: SETTINGS
+       ═══════════════════════════════════════════════ -->
+  <section id="screen-settings" class="screen" data-screen="settings">
+
+    <header class="screen-header">
+      <button class="btn-icon focusable"
+              data-action="back"
+              data-nav-id="btn-settings-back"
+              tabindex="0"
+              aria-label="Back">←</button>
+      <h1 class="screen-title">Settings</h1>
+    </header>
+
+    <main class="screen-content settings-layout">
+
+      <!-- Left: category nav -->
+      <nav id="settings-nav" class="settings-nav">
+        <button class="settings-nav-btn focusable active"
+                data-category="video"
+                data-nav-id="s-cat-video"
+                tabindex="0">
+          <span class="nav-icon">&#127908;</span>Video
+        </button>
+        <button class="settings-nav-btn focusable"
+                data-category="audio"
+                data-nav-id="s-cat-audio"
+                tabindex="0">
+          <span class="nav-icon">&#128266;</span>Audio
+        </button>
+        <button class="settings-nav-btn focusable"
+                data-category="input"
+                data-nav-id="s-cat-input"
+                tabindex="0">
+          <span class="nav-icon">&#127918;</span>Input
+        </button>
+        <button class="settings-nav-btn focusable"
+                data-category="about"
+                data-nav-id="s-cat-about"
+                tabindex="0">
+          <span class="nav-icon">&#9432;</span>About
+        </button>
+      </nav>
+
+      <!-- Right: settings panel – populated by settings.js -->
+      <div id="settings-panel" class="settings-panel"></div>
+
+    </main>
+
+    <footer class="screen-footer">
+      <div class="hint"><span class="key-hint">OK</span> Change</div>
+      <div class="hint"><span class="key-hint">←</span> Back</div>
+    </footer>
+  </section>
+
+
+  <!-- ═══════════════════════════════════════════════
+       MODAL: ADD HOST
+       ═══════════════════════════════════════════════ -->
+  <div id="modal-add-host" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-add-title">
+    <div class="modal-backdrop"></div>
+    <div class="modal-box">
+      <h2 id="modal-add-title" class="modal-title">Add Host</h2>
+
+      <div class="form-group">
+        <label class="form-label" for="host-ip-input">IP Address or Hostname</label>
+        <input type="text"
+               id="host-ip-input"
+               class="form-input focusable"
+               placeholder="192.168.1.100"
+               data-nav-id="input-host-ip"
+               tabindex="0"
+               autocomplete="off">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="host-name-input">Display Name <em style="font-weight:300;color:var(--color-text-muted)">(optional)</em></label>
+        <input type="text"
+               id="host-name-input"
+               class="form-input focusable"
+               placeholder="My Gaming PC"
+               data-nav-id="input-host-name"
+               tabindex="0"
+               autocomplete="off">
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary focusable"
+                data-action="close-modal"
+                data-nav-id="btn-modal-cancel"
+                tabindex="0">Cancel</button>
+        <button class="btn btn-primary focusable"
+                data-action="submit-add-host"
+                data-nav-id="btn-modal-connect"
+                tabindex="0">Connect</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ═══════════════════════════════════════════════
+       TOAST CONTAINER
+       ═══════════════════════════════════════════════ -->
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="false"></div>
+
+</div><!-- /#app -->
+
+<!-- webOS TV SDK -->
+<script src="webOSTVjs-1.2.10/webOSTV.js" charset="utf-8"></script>
+<script src="webOSTVjs-1.2.10/webOSTV-dev.js" charset="utf-8"></script>
+
+<!-- App scripts (load order: deps before consumers) -->
+<script src="js/keys.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/navigation.js"></script>
+<script src="js/screens/host-discovery.js"></script>
+<script src="js/screens/app-list.js"></script>
+<script src="js/screens/pairing.js"></script>
+<script src="js/screens/settings.js"></script>
+<script src="js/app.js"></script>
+
+</body>
+</html>

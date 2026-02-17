@@ -1,0 +1,196 @@
+'use strict';
+
+/**
+ * Host Discovery Screen
+ *
+ * Displays saved hosts, checks their online status via the
+ * GameStream/Sunshine HTTP API, and handles the "Add Host" flow.
+ *
+ * GameStream server info endpoint: http://<host>:47989/serverinfo
+ * Response is XML; status_code=200 means reachable.
+ */
+var HostDiscovery = (function () {
+
+    var GS_HTTP_PORT  = 47989;
+    var CHECK_TIMEOUT = 5000;  // ms
+
+    /* ── Utilities ── */
+
+    function esc(str) {
+        var d = document.createElement('div');
+        d.appendChild(document.createTextNode(String(str)));
+        return d.innerHTML;
+    }
+
+    function fetchWithTimeout(url, ms) {
+        return new Promise(function (resolve, reject) {
+            var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            var timer = setTimeout(function () {
+                if (controller) controller.abort();
+                reject(new Error('timeout'));
+            }, ms);
+
+            var opts = controller ? { signal: controller.signal } : {};
+            fetch(url, opts).then(function (r) {
+                clearTimeout(timer);
+                resolve(r);
+            }).catch(function (e) {
+                clearTimeout(timer);
+                reject(e);
+            });
+        });
+    }
+
+    /* ── Host Card DOM ── */
+
+    function statusLabel(status) {
+        return { online: 'Online', offline: 'Offline', pairing: 'Needs Pairing', unknown: 'Checking...' }[status] || 'Unknown';
+    }
+
+    function renderHostCard(host) {
+        var card = document.createElement('div');
+        card.className = 'host-card focusable';
+        card.tabIndex  = 0;
+        card.dataset.navId  = 'host-' + host.id;
+        card.dataset.hostId = host.id;
+        card.dataset.action = 'select-host';
+
+        var st = host.status || 'unknown';
+        card.innerHTML =
+            '<div class="host-card-header">' +
+                '<div class="host-status-dot ' + st + '"></div>' +
+                '<span class="host-name">' + esc(host.name) + '</span>' +
+            '</div>' +
+            '<span class="host-ip">' + esc(host.ip) + '</span>' +
+            '<span class="host-status-label ' + st + '">' + statusLabel(st) + '</span>' +
+            (!host.paired ? '<span class="badge badge-pairing" style="align-self:flex-start;margin-top:auto">Not Paired</span>' : '');
+
+        return card;
+    }
+
+    /* ── Render ── */
+
+    function render() {
+        var grid  = document.getElementById('host-grid');
+        var empty = document.getElementById('host-empty');
+        var hosts = Storage.getHosts();
+
+        // Remove old host cards but keep the "Add" card
+        Array.prototype.forEach.call(
+            grid.querySelectorAll('.host-card:not(.host-card-add)'),
+            function (c) { c.remove(); }
+        );
+
+        var addCard = grid.querySelector('.host-card-add');
+        hosts.forEach(function (host) {
+            grid.insertBefore(renderHostCard(host), addCard);
+        });
+
+        if (empty) empty.classList.toggle('hidden', hosts.length > 0);
+    }
+
+    /* ── Status Check ── */
+
+    function checkHost(host) {
+        var url = 'http://' + host.ip + ':' + GS_HTTP_PORT + '/serverinfo';
+
+        fetchWithTimeout(url, CHECK_TIMEOUT)
+            .then(function (r) { return r.text(); })
+            .then(function (xml) {
+                var parser = new DOMParser();
+                var doc    = parser.parseFromString(xml, 'text/xml');
+                var code   = (doc.querySelector('root') || {}).getAttribute
+                    ? doc.querySelector('root').getAttribute('status_code')
+                    : null;
+
+                if (code === '200') {
+                    var hostnameEl = doc.querySelector('hostname');
+                    var pairEl     = doc.querySelector('PairStatus');
+                    host.status = 'online';
+                    host.paired = pairEl ? pairEl.textContent === '1' : false;
+                    if (hostnameEl && hostnameEl.textContent) host.name = hostnameEl.textContent;
+                } else {
+                    host.status = 'offline';
+                }
+                Storage.saveHost(host);
+                updateCard(host);
+            })
+            .catch(function () {
+                host.status = 'offline';
+                Storage.saveHost(host);
+                updateCard(host);
+            });
+    }
+
+    function updateCard(host) {
+        var card = document.querySelector('[data-host-id="' + host.id + '"]');
+        if (!card) return;
+        var dot  = card.querySelector('.host-status-dot');
+        var lbl  = card.querySelector('.host-status-label');
+        var st   = host.status || 'unknown';
+        if (dot) dot.className = 'host-status-dot ' + st;
+        if (lbl) { lbl.textContent = statusLabel(st); lbl.className = 'host-status-label ' + st; }
+    }
+
+    /* ── Host Selection ── */
+
+    function onSelect(hostId) {
+        var host = Storage.getHost(hostId);
+        if (!host) return;
+
+        if (host.status === 'offline') {
+            App.showToast('Host is offline', 'error');
+            return;
+        }
+        if (!host.paired) {
+            App.navigate('pairing', { host: host });
+            return;
+        }
+        App.navigate('apps', { host: host });
+    }
+
+    /* ── Public ── */
+
+    return {
+
+        init: function () {
+            var grid = document.getElementById('host-grid');
+            if (!grid) return;
+
+            grid.addEventListener('click', function (e) {
+                var el = e.target.closest('[data-action]');
+                if (!el) return;
+                if (el.dataset.action === 'select-host') onSelect(el.dataset.hostId);
+                if (el.dataset.action === 'add-host')    App.openModal('add-host');
+            });
+        },
+
+        onEnter: function () {
+            render();
+            Storage.getHosts().forEach(checkHost);
+            Navigation.focusDefault();
+        },
+
+        onLeave: function () { /* nothing to clean up */ },
+
+        /** Called from the "Add Host" modal. */
+        addHost: function (ip, name) {
+            if (!ip || !ip.trim()) {
+                App.showToast('Please enter a host IP address', 'error');
+                return false;
+            }
+            var hosts = Storage.getHosts();
+            if (hosts.some(function (h) { return h.ip === ip.trim(); })) {
+                App.showToast('A host with that IP already exists', 'warning');
+                return false;
+            }
+            var host = Storage.createHost(ip, name);
+            Storage.saveHost(host);
+            render();
+            checkHost(host);
+            App.showToast('Host added: ' + host.name, 'success');
+            return true;
+        },
+    };
+
+}());
