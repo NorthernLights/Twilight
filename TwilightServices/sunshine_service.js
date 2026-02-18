@@ -28,6 +28,7 @@ var pkgInfo = require('./package.json');
 var Service = require('webos-service');
 var dgram   = require('dgram');
 var http    = require('http');
+var https   = require('https');
 var net     = require('net');
 var os      = require('os');
 
@@ -423,6 +424,81 @@ service.register('scan', function (message) {
             });
         }
     });
+});
+
+/**
+ * pairVerify – Perform the GameStream/Sunshine HTTPS pairing-challenge step.
+ *
+ * Sunshine uses a self-signed TLS certificate, which Chrome (and therefore
+ * the webOS simulator / TV browser) rejects via fetch().  This method proxies
+ * the request through Node.js with rejectUnauthorized: false so the self-
+ * signed cert is accepted, without compromising the pairing security (the
+ * protocol's RSA + AES cryptographic verification already authenticates the
+ * server in steps 1–4).
+ *
+ * Request payload:
+ *   ip     {string}  Sunshine host IP address
+ *   port   {number}  HTTPS port (default: 47984)
+ *   params {object}  Query-string parameters (key/value strings)
+ *
+ * Response on success: { returnValue: true, xml: "<root>...</root>" }
+ * Response on failure: { returnValue: false, errorText: "...", errorCode: N }
+ */
+service.register('pairVerify', function (message) {
+    var payload = message.payload || {};
+    var ip      = payload.ip;
+    var port    = (typeof payload.port === 'number') ? payload.port : 47984;
+    var params  = payload.params || {};
+
+    if (!ip) {
+        message.respond({ returnValue: false, errorText: '"ip" is required', errorCode: 1 });
+        return;
+    }
+
+    /* Build query string */
+    var qs = Object.keys(params).map(function (k) {
+        return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+    }).join('&');
+
+    var responded = false;
+    function reply(obj) {
+        if (responded) return;
+        responded = true;
+        message.respond(obj);
+    }
+
+    var options = {
+        hostname:           ip,
+        port:               port,
+        path:               '/pair?' + qs,
+        method:             'GET',
+        timeout:            12000,
+        /* Accept Sunshine's self-signed certificate.
+           Security is provided by the RSA/AES handshake in steps 1–4.      */
+        rejectUnauthorized: false,
+    };
+
+    console.log('[Sunshine] pairVerify →', 'https://' + ip + ':' + port + '/pair?' + qs);
+
+    var req = https.request(options, function (res) {
+        var body = '';
+        res.on('data', function (chunk) { body += chunk; });
+        res.on('end',  function () {
+            console.log('[Sunshine] pairVerify ←', body.slice(0, 200));
+            reply({ returnValue: true, xml: body });
+        });
+    });
+
+    req.on('timeout', function () {
+        req.destroy();
+        reply({ returnValue: false, errorText: 'pairVerify timed out', errorCode: 2 });
+    });
+
+    req.on('error', function (e) {
+        reply({ returnValue: false, errorText: e.message, errorCode: 3 });
+    });
+
+    req.end();
 });
 
 /**

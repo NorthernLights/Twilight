@@ -47,7 +47,7 @@ var Pairing = (function () {
     /* ── Constants ── */
     var GS_HTTP_PORT  = 47989;
     var GS_HTTPS_PORT = 47984;
-    var TIMEOUT_MS    = 60000;
+    var TIMEOUT_MS    = 180000;  /* 3 minutes – starts only after identity is ready */
     var DEVICE_NAME   = 'roth';  /* Moonlight sends "roth" as the devicename */
 
     /* ── State ── */
@@ -192,7 +192,7 @@ var Pairing = (function () {
             phrase:     'getservercert',
             salt:       TwilightCrypto.bytesToHex(salt),
             clientcert: TwilightIdentity.getCertPemHex(),
-        }));
+        }), 30000);
         checkStatus(s1, 1);
         if (xmlStr(s1, 'paired') !== '1') throw new Error('Step 1: server refused pairing');
 
@@ -205,12 +205,17 @@ var Pairing = (function () {
         var serverCertDer = TwilightCrypto.pemToBytes(serverCertPem);
 
         /* ── Step 2: clientchallenge ──────────── */
-        setStatus('Step 2/5  Sending challenge…');
+        /*
+         * Sunshine shows a PIN-entry dialog on the host when it receives this
+         * request, then blocks until the user types the PIN shown on Twilight
+         * and clicks OK.  This step can legitimately take the full TIMEOUT_MS.
+         */
+        setStatus('Step 2/5  Enter the PIN on your Sunshine host now…');
         var randomChallenge = TwilightCrypto.randomBytes(16);
         var encChallenge    = await TwilightCrypto.aesEcbEncrypt(aesKey, randomChallenge);
         var s2 = await fetchXml(pairUrl(ip, {
             clientchallenge: TwilightCrypto.bytesToHex(encChallenge),
-        }));
+        }), TIMEOUT_MS);
         checkStatus(s2, 2);
         if (xmlStr(s2, 'paired') !== '1') { sendUnpair(ip); throw new Error('Step 2 refused'); }
 
@@ -240,7 +245,7 @@ var Pairing = (function () {
 
         var s3 = await fetchXml(pairUrl(ip, {
             serverchallengeresp: TwilightCrypto.bytesToHex(encChallengeHash),
-        }));
+        }), 30000);
         checkStatus(s3, 3);
         if (xmlStr(s3, 'paired') !== '1') { sendUnpair(ip); throw new Error('Step 3 refused'); }
 
@@ -285,19 +290,57 @@ var Pairing = (function () {
 
         var s4 = await fetchXml(pairUrl(ip, {
             clientpairingsecret: TwilightCrypto.bytesToHex(clientSecret_),
-        }));
+        }), 30000);
         checkStatus(s4, 4);
         if (xmlStr(s4, 'paired') !== '1') { sendUnpair(ip); throw new Error('Step 4 refused'); }
 
-        /* ── Step 5: HTTPS pairchallenge ─────── */
+        /* ── Step 5: HTTPS pairchallenge ─────────────────────────────────
+         *
+         * Sunshine uses a self-signed TLS certificate on port 47984.
+         * fetch() in Chrome/webOS rejects self-signed certs, so we route
+         * this request through the TwilightServices background service which
+         * runs Node.js and can set rejectUnauthorized: false.
+         * A direct HTTPS fetch is used as a fallback (browser / dev mode).  */
         setStatus('Step 5/5  Confirming pairing over HTTPS…');
-        var s5Url = buildUrl('https', ip, GS_HTTPS_PORT, 'pair', {
+
+        var pairChallengeParams = {
             uniqueid:    TwilightIdentity.getUniqueId(),
             devicename:  DEVICE_NAME,
             updateState: '1',
             phrase:      'pairchallenge',
-        });
-        var s5 = await fetchXml(s5Url, 10000);
+        };
+
+        var s5;
+        if (typeof webOS !== 'undefined' && webOS.service) {
+            s5 = await new Promise(function (resolve, reject) {
+                var settled = false;
+                var timer = setTimeout(function () {
+                    if (!settled) { settled = true; reject(new Error('Step 5: service call timed out')); }
+                }, 15000);
+
+                webOS.service.request('luna://com.twilightstream.client.service', {
+                    method:     'pairVerify',
+                    parameters: { ip: ip, port: GS_HTTPS_PORT, params: pairChallengeParams },
+                    onSuccess: function (res) {
+                        clearTimeout(timer);
+                        if (settled) return;
+                        settled = true;
+                        if (!res.xml) { reject(new Error('pairVerify: no XML returned')); return; }
+                        resolve(parseXml(res.xml));
+                    },
+                    onFailure: function (err) {
+                        clearTimeout(timer);
+                        if (settled) return;
+                        settled = true;
+                        reject(new Error((err && err.errorText) || 'pairVerify service failed'));
+                    },
+                });
+            });
+        } else {
+            /* Fallback: direct HTTPS (works in dev/browser mode; may fail on self-signed certs) */
+            s5 = await fetchXml(buildUrl('https', ip, GS_HTTPS_PORT, 'pair', pairChallengeParams), 15000);
+        }
+
         checkStatus(s5, 5);
         if (xmlStr(s5, 'paired') !== '1') {
             sendUnpair(ip);
@@ -360,7 +403,6 @@ var Pairing = (function () {
         },
 
         onEnter: function (params) {
-            var self = this;
             _host   = params && params.host ? params.host : null;
             _active = true;
 
@@ -370,16 +412,17 @@ var Pairing = (function () {
                 if (nameEl) nameEl.textContent = _host.name;
             }
 
-            /* Generate and display PIN */
+            /* Generate and display PIN immediately so the user can read it
+               while identity initialisation runs in the background.        */
             _pin = String(Math.floor(1000 + Math.random() * 9000));
             showPin(_pin);
-            startBar();
-            setStatus('Preparing secure identity…');
+            setStatus('Preparing secure identity\u2026');
 
-            /* Start watchdog */
-            _timerId = setTimeout(onTimeout, TIMEOUT_MS);
-
-            /* Ensure identity ready, then start protocol */
+            /* Ensure identity ready, then start pairing protocol.
+               The watchdog timer and progress bar start only once identity is
+               ready – this ensures RSA-2048 key generation on first run (which
+               can take 10-30 s on slow hardware) does not consume the pairing
+               budget before the handshake even begins.                       */
             var identityReady = TwilightIdentity.isReady()
                 ? Promise.resolve()
                 : TwilightIdentity.init();
@@ -387,6 +430,10 @@ var Pairing = (function () {
             identityReady
                 .then(function () {
                     if (!_active || !_host) return;
+                    /* Pairing protocol is about to start: begin the timer */
+                    startBar();
+                    _timerId = setTimeout(onTimeout, TIMEOUT_MS);
+                    setStatus('Step 1/5  Connecting to host\u2026');
                     return doPairing(_host, _pin);
                 })
                 .then(function () {
