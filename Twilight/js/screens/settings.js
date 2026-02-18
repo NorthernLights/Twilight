@@ -74,9 +74,9 @@ var Settings = (function () {
                 {
                     header: 'Twilight',
                     items: [
-                        { key: '_ver',   name: 'Version',          type: 'info', value: '1.0.0' },
+                        { key: '_ver',   name: 'Version',          type: 'info', value: '\u2014' },
                         { key: '_build', name: 'Build',            type: 'info', value: (typeof TwilightBuild !== 'undefined' ? TwilightBuild : '\u2014') },
-                        { key: '_svc',   name: 'Twilight Services', type: 'info', value: '\u2014' },
+                        { key: '_svc',   name: 'Twilight Services', type: 'info', value: (typeof TwilightServicesVersion !== 'undefined' ? TwilightServicesVersion : '\u2014') },
                         { key: '_prot', name: 'Protocol',          type: 'info', value: 'Moonlight (GameStream / Sunshine)' },
                         { key: '_sdk',  name: 'webOS SDK', type: 'info', value: 'webOSTVjs 1.2.10' },
                         { key: '_lic',  name: 'License',   type: 'info', value: 'GNU GPL v3' },
@@ -205,6 +205,17 @@ var Settings = (function () {
         });
     }
 
+    /** Dynamically read the app version from appinfo.json via webOS.fetchAppInfo(). */
+    function detectAppVersion() {
+        if (typeof webOS === 'undefined') return;
+        webOS.fetchAppInfo(function (info) {
+            if (info && info.version) {
+                updateAboutItem('_ver', info.version);
+                if (_category === 'about') renderPanel('about');
+            }
+        });
+    }
+
     /** Detect supported video codecs via the MediaCapabilities API (Chrome 67+). */
     function detectVideoDecoder() {
         if (!navigator.mediaCapabilities || !navigator.mediaCapabilities.decodingInfo) {
@@ -318,6 +329,7 @@ var Settings = (function () {
 
         onEnter: function () {
             renderPanel('video');
+            detectAppVersion();
             detectDevice();
             detectVideoDecoder();
             detectAudioBackend();

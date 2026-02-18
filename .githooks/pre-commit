@@ -1,17 +1,27 @@
 #!/bin/sh
 # Twilight pre-commit hook
-# Stamps Twilight/js/version.js with the current HEAD commit hash (7 chars)
-# so the About page always reflects the build that shipped.
+# Stamps Twilight/js/version.js with:
+#   TwilightBuild          – current HEAD commit hash (7 chars)
+#   TwilightServicesVersion – version from TwilightServices/package.json
 #
 # One-time setup: git config core.hooksPath .githooks
 
 HASH=$(git rev-parse --short HEAD 2>/dev/null || echo 'dev')
-VERSION_FILE="Twilight/js/version.js"
 
+# Extract version from TwilightServices/package.json using grep + sed
+# (no Node.js required at hook time)
+SVC_VER=$(grep '"version"' TwilightServices/package.json 2>/dev/null \
+    | head -1 \
+    | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+[ -z "$SVC_VER" ] && SVC_VER='\u2014'
+
+VERSION_FILE="Twilight/js/version.js"
 if [ ! -f "$VERSION_FILE" ]; then
     exit 0
 fi
 
 # GNU sed in-place replacement (Git for Windows ships GNU sed)
 sed -i "s/var TwilightBuild = '[^']*';/var TwilightBuild = '$HASH';/" "$VERSION_FILE"
+sed -i "s/var TwilightServicesVersion = '[^']*';/var TwilightServicesVersion = '$SVC_VER';/" "$VERSION_FILE"
+
 git add "$VERSION_FILE"
