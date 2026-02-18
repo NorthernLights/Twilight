@@ -4,12 +4,13 @@
     "description": "Twilight Sunshine Host Discovery Service",
     "main": "sunshine_service.js",
     "scripts": {
-        "test": "echo \"Error: no test specified\" && exit 1",
-        "postinstall": "patch-package"
+        "start": "node sunshine_service.js",
+        "test": "echo \"Error: no test specified\" && exit 1"
     },
-    "author": "",
-    "license": "BSD",
-    "dependencies": {
+    "author": "Twilight Contributors",
+    "license": "GPL-3.0-or-later",
+    "dependencies": {},
+    "devDependencies": {
         "@types/webos-service": "^0.4.6"
     }
 }

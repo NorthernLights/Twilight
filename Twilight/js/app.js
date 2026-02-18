@@ -64,34 +64,6 @@ var App = (function () {
         }
     }
 
-    /* ── Modal ── */
-
-    function initModals() {
-        // "Add Host" submit
-        var submitBtn = document.querySelector('[data-action="submit-add-host"]');
-        if (submitBtn) {
-            submitBtn.addEventListener('click', function () {
-                var ip   = (document.getElementById('host-ip-input')   || {}).value || '';
-                var name = (document.getElementById('host-name-input') || {}).value || '';
-                if (HostDiscovery.addHost(ip, name)) {
-                    document.getElementById('host-ip-input').value   = '';
-                    document.getElementById('host-name-input').value = '';
-                    pub.closeModal();
-                }
-            });
-        }
-
-        // Generic close-modal buttons
-        document.querySelectorAll('[data-action="close-modal"]').forEach(function (btn) {
-            btn.addEventListener('click', function () { pub.closeModal(); });
-        });
-
-        // Backdrop click
-        document.querySelectorAll('.modal-backdrop').forEach(function (bd) {
-            bd.addEventListener('click', function () { pub.closeModal(); });
-        });
-    }
-
     /* ── webOS Integration ── */
 
     function initWebOS() {
@@ -153,7 +125,6 @@ var App = (function () {
             Pairing.init();
             Settings.init();
             Navigation.init();
-            initModals();
             initWebOS();
 
             // Stream overlay actions

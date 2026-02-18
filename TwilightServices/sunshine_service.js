@@ -191,8 +191,19 @@ function extractARecordIPs(buf) {
 /**
  * Hit the GameStream/Sunshine /serverinfo endpoint and parse the response.
  * Calls back with (null, { ip, port, name, paired }) on success, or (Error) on failure.
+ *
+ * The `once` guard ensures callback is never invoked more than once, preventing
+ * the double-call that occurs when req.destroy() (called from the timeout handler)
+ * subsequently emits an 'error' event.
  */
 function verifyHost(ip, port, callback) {
+    var called = false;
+    function once(err, info) {
+        if (called) return;
+        called = true;
+        callback(err, info);
+    }
+
     var opts = {
         host:    ip,
         port:    port,
@@ -207,11 +218,11 @@ function verifyHost(ip, port, callback) {
         res.on('end',  function () {
             var statusMatch = body.match(/status_code="?(\d+)"?/);
             if (!statusMatch || statusMatch[1] !== '200') {
-                return callback(new Error('Unexpected status_code'));
+                return once(new Error('Unexpected status_code'));
             }
             var nameMatch = body.match(/<hostname>([^<]+)<\/hostname>/);
             var pairMatch = body.match(/<PairStatus>(\d)<\/PairStatus>/);
-            callback(null, {
+            once(null, {
                 ip:     ip,
                 port:   port,
                 name:   nameMatch ? nameMatch[1] : ip,
@@ -220,8 +231,8 @@ function verifyHost(ip, port, callback) {
         });
     });
 
-    req.on('timeout', function () { req.destroy(); callback(new Error('timeout')); });
-    req.on('error',   function (e) { callback(e); });
+    req.on('timeout', function () { req.destroy(); once(new Error('timeout')); });
+    req.on('error',   function (e) { once(e); });
     req.end();
 }
 
@@ -282,11 +293,12 @@ function getSubnetPrefixes() {
  * @param {Function} callback  function(err, hosts[])
  */
 function scanForSunshineHosts(timeout, callback) {
-    var candidates  = {};      // ip → true  (deduplication set)
-    var mdnsSockets = [];
+    var candidates    = {};      // ip → true  (deduplication set)
+    var windowClosed  = false;   // prevents late TCP-probe callbacks adding entries
+    var mdnsSockets   = [];
 
     function addCandidate(ip) {
-        candidates[ip] = true;
+        if (!windowClosed) candidates[ip] = true;
     }
 
     // ── 1. mDNS Discovery ──────────────────────────────────────────────────
@@ -343,6 +355,8 @@ function scanForSunshineHosts(timeout, callback) {
     // ── 3. After Discovery Window: Verify All Candidates via HTTP ──────────
 
     setTimeout(function () {
+        windowClosed = true;  // block any late TCP callbacks from adding candidates
+
         // Stop mDNS sockets
         mdnsSockets.forEach(function (s) {
             try { s.close(); } catch (e) { /* ignore */ }

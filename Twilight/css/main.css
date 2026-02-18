@@ -275,17 +275,6 @@ button { -webkit-tap-highlight-color: transparent; }
 .host-status-label.offline { color: var(--color-text-muted); }
 .host-status-label.pairing { color: var(--color-pairing); }
 
-/* Add Host Card */
-.host-card-add {
-    border-style: dashed;
-    align-items: center; justify-content: center;
-    gap: var(--gap-sm); color: var(--color-text-muted);
-}
-.add-icon  { font-size: 52px; font-weight: 200; transition: color var(--trans-fast); }
-.add-label { font-size: var(--font-md); transition: color var(--trans-fast); }
-.host-card-add.focused .add-icon  { color: var(--color-accent); }
-.host-card-add.focused .add-label { color: var(--color-text); }
-
 /* Scan Network Card */
 .host-card-scan {
     border-style: dashed;

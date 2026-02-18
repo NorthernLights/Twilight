@@ -56,19 +56,12 @@
           <span class="scan-icon">&#9685;</span>
           <span class="scan-label">Scan Network</span>
         </div>
-        <div class="host-card host-card-add focusable"
-             data-action="add-host"
-             data-nav-id="btn-add-host"
-             tabindex="0">
-          <span class="add-icon">+</span>
-          <span class="add-label">Add Host</span>
-        </div>
       </div>
 
       <div id="host-empty" class="state-empty hidden">
         <div class="state-empty-icon">📡</div>
-        <h3>No Hosts Added</h3>
-        <p>Press <strong>Add Host</strong> to connect to a GameStream or Sunshine server.</p>
+        <h3>No Hosts Found</h3>
+        <p>Press <strong>Scan Network</strong> to discover Sunshine hosts on your network.</p>
       </div>
     </main>
 
@@ -250,50 +243,6 @@
       <div class="hint"><span class="key-hint">←</span> Back</div>
     </footer>
   </section>
-
-
-  <!-- ═══════════════════════════════════════════════
-       MODAL: ADD HOST
-       ═══════════════════════════════════════════════ -->
-  <div id="modal-add-host" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-add-title">
-    <div class="modal-backdrop"></div>
-    <div class="modal-box">
-      <h2 id="modal-add-title" class="modal-title">Add Host</h2>
-
-      <div class="form-group">
-        <label class="form-label" for="host-ip-input">IP Address or Hostname</label>
-        <input type="text"
-               id="host-ip-input"
-               class="form-input focusable"
-               placeholder="192.168.1.100"
-               data-nav-id="input-host-ip"
-               tabindex="0"
-               autocomplete="off">
-      </div>
-
-      <div class="form-group">
-        <label class="form-label" for="host-name-input">Display Name <em style="font-weight:300;color:var(--color-text-muted)">(optional)</em></label>
-        <input type="text"
-               id="host-name-input"
-               class="form-input focusable"
-               placeholder="My Gaming PC"
-               data-nav-id="input-host-name"
-               tabindex="0"
-               autocomplete="off">
-      </div>
-
-      <div class="modal-actions">
-        <button class="btn btn-secondary focusable"
-                data-action="close-modal"
-                data-nav-id="btn-modal-cancel"
-                tabindex="0">Cancel</button>
-        <button class="btn btn-primary focusable"
-                data-action="submit-add-host"
-                data-nav-id="btn-modal-connect"
-                tabindex="0">Connect</button>
-      </div>
-    </div>
-  </div>
 
 
   <!-- ═══════════════════════════════════════════════

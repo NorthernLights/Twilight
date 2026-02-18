@@ -1,9 +1,12 @@
 {
   "id": "com.twilightstream.client.service",
   "description": "Twilight Sunshine Host Discovery Service",
+  "engine": "node",
+  "executable": "sunshine_service.js",
   "services": [
     {
-      "name": "com.twilightstream.client.service"
+      "name": "com.twilightstream.client.service",
+      "description": "Discover Sunshine and GameStream hosts on the local network"
     }
   ]
 }
