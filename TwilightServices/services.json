@@ -1,0 +1,9 @@
+{
+  "id": "com.twilightstream.client.service",
+  "description": "Twilight Sunshine Host Discovery Service",
+  "services": [
+    {
+      "name": "com.twilightstream.client.service"
+    }
+  ]
+}
