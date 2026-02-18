@@ -81,7 +81,16 @@ var AppList = (function () {
 
     function loadApps() {
         setLoading(true);
-        var url = 'http://' + _host.ip + ':' + GS_HTTP_PORT + '/applist';
+
+        /* Sunshine requires uniqueid to authenticate /applist and return the
+         * app list for this specific paired client.  Without it the server
+         * either rejects the request or returns an empty response.           */
+        var uid = (typeof TwilightIdentity !== 'undefined' && TwilightIdentity.isReady())
+            ? TwilightIdentity.getUniqueId()
+            : null;
+        var qs  = uid ? '?uniqueid=' + encodeURIComponent(uid) : '';
+
+        var url = 'http://' + _host.ip + ':' + GS_HTTP_PORT + '/applist' + qs;
 
         fetchText(url)
             .then(function (xml) {
@@ -95,8 +104,8 @@ var AppList = (function () {
                 showError();
             });
 
-        // Parallel: find currently running app
-        fetchText('http://' + _host.ip + ':' + GS_HTTP_PORT + '/serverinfo', 5000)
+        // Parallel: find currently running app (uniqueid needed for accurate response)
+        fetchText('http://' + _host.ip + ':' + GS_HTTP_PORT + '/serverinfo' + qs, 5000)
             .then(function (xml) { _runningId = parseRunningApp(xml); renderApps(); })
             .catch(function () {});
     }

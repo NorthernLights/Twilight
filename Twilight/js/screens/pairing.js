@@ -390,7 +390,10 @@ var Pairing = (function () {
         _host.status = 'online';
         Storage.saveHost(_host);
         App.showToast('Paired with ' + _host.name, 'success');
-        App.navigate('apps', { host: _host });
+        /* Use replace() so the pairing screen is removed from the back stack.
+         * Pressing BACK from the app list will return to the host list, not
+         * the PIN screen.                                                     */
+        App.replace('apps', { host: _host });
     }
 
     function onFailed(err) {

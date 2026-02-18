@@ -127,6 +127,14 @@ var App = (function () {
             Navigation.init();
             initWebOS();
 
+            /* Warm up the persistent device identity at startup so the uniqueid
+             * is available as soon as the user interacts with a host card.
+             * On subsequent launches this only imports a key from localStorage
+             * and completes well within the time needed for user interaction.  */
+            TwilightIdentity.init().catch(function (e) {
+                console.error('[App] Identity init failed:', e);
+            });
+
             // Stream overlay actions
             var resumeBtn = document.querySelector('[data-action="resume-stream"]');
             if (resumeBtn) {
@@ -158,6 +166,16 @@ var App = (function () {
         /** Push a new screen onto the stack. */
         navigate: function (screenId, params) {
             _stack.push({ screenId: _current, params: {} });
+            showScreen(screenId, params || {}, false);
+        },
+
+        /**
+         * Transition to a new screen without adding the current screen to the
+         * back stack.  Use when the current screen should be skipped on BACK
+         * (e.g. navigating from Pairing → Apps after a successful pairing so
+         * that BACK returns to the host list, not the PIN screen).
+         */
+        replace: function (screenId, params) {
             showScreen(screenId, params || {}, false);
         },
 
