@@ -75,10 +75,10 @@ var Settings = (function () {
                     header: 'Twilight',
                     items: [
                         { key: '_ver',  name: 'Version',          type: 'info', value: '1.0.0' },
-                        { key: '_svc',  name: 'Twilight Services', type: 'info', value: '1.0.0' },
+                        { key: '_svc',  name: 'Twilight Services', type: 'info', value: '\u2014' },
                         { key: '_prot', name: 'Protocol',          type: 'info', value: 'Moonlight (GameStream / Sunshine)' },
                         { key: '_sdk',  name: 'webOS SDK', type: 'info', value: 'webOSTVjs 1.2.10' },
-                        { key: '_lic',  name: 'License',   type: 'info', value: 'Apache 2.0' },
+                        { key: '_lic',  name: 'License',   type: 'info', value: 'GNU GPL v3' },
                     ],
                 },
                 {
@@ -223,7 +223,11 @@ var Settings = (function () {
             if (nav) {
                 nav.addEventListener('click', function (e) {
                     var btn = e.target.closest('.settings-nav-btn');
-                    if (btn && btn.dataset.category) renderPanel(btn.dataset.category);
+                    if (!btn || !btn.dataset.category) return;
+                    renderPanel(btn.dataset.category);
+                    /* Re-query the service version each time About is opened
+                       so it always reflects the current TwilightServices build. */
+                    if (btn.dataset.category === 'about') detectTwilightServices();
                 });
             }
 
