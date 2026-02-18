@@ -27,8 +27,9 @@ var Storage = (function () {
         codec:      'hevc',     // 'h264' | 'hevc' | 'av1'
         hdr:        false,
         // Audio
-        audioConfig:  'stereo', // 'stereo' | '5.1' | '7.1'
-        audioBitrate: 192,      // kbps
+        audioConfig:      'stereo', // 'stereo' | '5.1' | '7.1'
+        audioBitrate:     192,      // kbps
+        muteSunshineAudio: false,   // mute host-side audio during streaming
         // Input
         rumble:         true,
         mouseEmulation: false,

@@ -54,6 +54,12 @@ var Settings = (function () {
                         { key: 'audioBitrate', name: 'Audio Bitrate',  desc: 'Audio quality',     type: 'select', options: [96,192,320], fmt: function(v){ return v + ' kbps'; } },
                     ],
                 },
+                {
+                    header: 'Playback',
+                    items: [
+                        { key: 'muteSunshineAudio', name: 'Mute Sunshine Host Audio', desc: 'Allows you to mute the audio playback from the Host Sunshine system', type: 'toggle' },
+                    ],
+                },
             ],
         },
         input: {
@@ -282,16 +288,21 @@ var Settings = (function () {
         });
     }
 
-    /** Query the Twilight service for its version and update the About panel. */
+    /**
+     * Ping the Twilight service to confirm it is running.
+     * The displayed version is always taken from TwilightServicesVersion (version.js,
+     * stamped at commit time from TwilightServices/package.json) so the About panel
+     * never shows a stale value from an older service deployment.
+     * Only failure is surfaced – it overwrites the version with 'Unavailable' so the
+     * user can see the service is not reachable.
+     */
     function detectTwilightServices() {
         if (typeof webOS === 'undefined') return;
         webOS.service.request('luna://com.twilightstream.client.service', {
             method: 'getVersion',
             parameters: {},
-            onSuccess: function (result) {
-                if (!result.version) return;
-                updateAboutItem('_svc', result.version);
-                if (_category === 'about') renderPanel('about');
+            onSuccess: function () {
+                /* Service is alive – version already set from TwilightServicesVersion. */
             },
             onFailure: function (err) {
                 console.error('[Settings] TwilightServices unavailable:', err && err.errorText);
