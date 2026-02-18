@@ -286,6 +286,30 @@ button { -webkit-tap-highlight-color: transparent; }
 .host-card-add.focused .add-icon  { color: var(--color-accent); }
 .host-card-add.focused .add-label { color: var(--color-text); }
 
+/* Scan Network Card */
+.host-card-scan {
+    border-style: dashed;
+    border-color: rgba(123,92,247,0.4);
+    align-items: center; justify-content: center;
+    gap: var(--gap-sm); color: var(--color-text-muted);
+}
+.scan-icon  {
+    font-size: 44px; font-weight: 200;
+    color: var(--color-secondary);
+    transition: color var(--trans-fast), filter var(--trans-fast);
+}
+.scan-label { font-size: var(--font-md); transition: color var(--trans-fast); }
+.host-card-scan.focused .scan-icon  { color: var(--color-secondary); filter: drop-shadow(0 0 10px rgba(123,92,247,0.6)); }
+.host-card-scan.focused .scan-label { color: var(--color-text); }
+.host-card-scan.focused { border-color: var(--color-secondary); box-shadow: 0 0 0 3px var(--color-secondary), 0 0 24px rgba(123,92,247,0.35); }
+
+/* Scanning animation – pulse the icon while discovery is running */
+.host-card-scan.scanning .scan-icon { animation: scanPulse 1s ease-in-out infinite; }
+@keyframes scanPulse {
+    0%, 100% { opacity: 1;    transform: scale(1);    }
+    50%       { opacity: 0.5; transform: scale(0.88); }
+}
+
 /* --- Status Badges --- */
 .badge {
     display: inline-flex; align-items: center; gap: 8px;

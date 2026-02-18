@@ -33,7 +33,7 @@ var Settings = (function () {
                         { key: 'resolution', name: 'Resolution',    desc: 'Maximum stream resolution',              type: 'select', options: ['720p','1080p','4K'] },
                         { key: 'frameRate',  name: 'Frame Rate',    desc: 'Target frames per second',              type: 'select', options: [30,60,120], fmt: function(v){ return v + ' fps'; } },
                         { key: 'bitrate',    name: 'Video Bitrate', desc: 'Network bandwidth for video',           type: 'range',  min: 5, max: 150, step: 5, fmt: function(v){ return v + ' Mbps'; } },
-                        { key: 'codec',      name: 'Codec',         desc: 'H.264 = compatible; HEVC = efficient',  type: 'select', options: ['h264','hevc','av1'], labels: ['H.264','HEVC / H.265','AV1'] },
+                        { key: 'codec',      name: 'Codec',         desc: 'H.264 for Compatibility, HEVC for Efficiency, and AV1 for Modern Hosts',  type: 'select', options: ['h264','hevc','av1'], labels: ['H.264','HEVC / H.265','AV1'] },
                     ],
                 },
                 {
@@ -74,8 +74,9 @@ var Settings = (function () {
                 {
                     header: 'Twilight',
                     items: [
-                        { key: '_ver',  name: 'Version',   type: 'info', value: '1.0.0' },
-                        { key: '_prot', name: 'Protocol',  type: 'info', value: 'Moonlight (GameStream / Sunshine)' },
+                        { key: '_ver',  name: 'Version',          type: 'info', value: '1.0.0' },
+                        { key: '_svc',  name: 'Twilight Services', type: 'info', value: '1.0.0' },
+                        { key: '_prot', name: 'Protocol',          type: 'info', value: 'Moonlight (GameStream / Sunshine)' },
                         { key: '_sdk',  name: 'webOS SDK', type: 'info', value: 'webOSTVjs 1.2.10' },
                         { key: '_lic',  name: 'License',   type: 'info', value: 'Apache 2.0' },
                     ],
@@ -194,6 +195,25 @@ var Settings = (function () {
         });
     }
 
+    /** Query the Twilight service for its version and update the About panel. */
+    function detectTwilightServices() {
+        if (typeof webOS === 'undefined') return;
+        webOS.service.request('luna://com.twilightstream.client.service', {
+            method: 'getVersion',
+            parameters: {},
+            onSuccess: function (result) {
+                if (!result.version) return;
+                SCHEMA.about.sections[0].items.forEach(function (item) {
+                    if (item.key === '_svc') item.value = result.version;
+                });
+                if (_category === 'about') renderPanel('about');
+            },
+            onFailure: function () {
+                // Service unavailable – keep the static fallback value
+            },
+        });
+    }
+
     /* ── Public ── */
 
     return {
@@ -219,6 +239,7 @@ var Settings = (function () {
         onEnter: function () {
             renderPanel('video');
             detectDevice();
+            detectTwilightServices();
         },
 
         onLeave: function () {

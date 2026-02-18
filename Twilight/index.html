@@ -49,6 +49,13 @@
 
       <div id="host-grid" class="host-grid">
         <!-- Host cards injected by host-discovery.js -->
+        <div class="host-card host-card-scan focusable"
+             data-action="scan-network"
+             data-nav-id="btn-scan-network"
+             tabindex="0">
+          <span class="scan-icon">&#9685;</span>
+          <span class="scan-label">Scan Network</span>
+        </div>
         <div class="host-card host-card-add focusable"
              data-action="add-host"
              data-nav-id="btn-add-host"
@@ -304,6 +311,8 @@
 <script src="js/keys.js"></script>
 <script src="js/storage.js"></script>
 <script src="js/navigation.js"></script>
+<script src="js/crypto.js"></script>
+<script src="js/identity.js"></script>
 <script src="js/screens/host-discovery.js"></script>
 <script src="js/screens/app-list.js"></script>
 <script src="js/screens/pairing.js"></script>

@@ -84,9 +84,9 @@ var HostDiscovery = (function () {
         var empty = document.getElementById('host-empty');
         var hosts = Storage.getHosts();
 
-        // Remove old host cards but keep the "Add" card
+        // Remove old host cards but keep the "Add" and "Scan" action cards
         Array.prototype.forEach.call(
-            grid.querySelectorAll('.host-card:not(.host-card-add)'),
+            grid.querySelectorAll('.host-card:not(.host-card-add):not(.host-card-scan)'),
             function (c) { c.remove(); }
         );
 
@@ -158,6 +158,74 @@ var HostDiscovery = (function () {
         App.navigate('apps', { host: host });
     }
 
+    /* ── Network Scan ── */
+
+    /**
+     * Trigger a Sunshine/GameStream host discovery scan via the Twilight
+     * background service (com.twilightstream.client.service).
+     * Discovered hosts that are not already saved are added automatically.
+     */
+    function scanNetwork() {
+        if (typeof webOS === 'undefined') {
+            App.showToast('Network scan requires webOS', 'warning');
+            return;
+        }
+
+        var scanCard  = document.querySelector('[data-action="scan-network"]');
+        var scanLabel = scanCard && scanCard.querySelector('.scan-label');
+
+        if (scanCard) scanCard.classList.add('scanning');
+        if (scanLabel) scanLabel.textContent = 'Scanning\u2026';
+        App.showToast('Scanning for Sunshine hosts\u2026', 'info');
+
+        webOS.service.request('luna://com.twilightstream.client.service', {
+            method:     'scan',
+            parameters: { timeout: 5000 },
+            onSuccess: function (result) {
+                if (scanCard)  scanCard.classList.remove('scanning');
+                if (scanLabel) scanLabel.textContent = 'Scan Network';
+
+                var found   = 0;
+                var already = 0;
+
+                (result.hosts || []).forEach(function (discovered) {
+                    var existing = Storage.getHosts();
+                    if (existing.some(function (h) { return h.ip === discovered.ip; })) {
+                        already++;
+                        return;
+                    }
+                    var host = Storage.createHost(discovered.ip, discovered.name);
+                    Storage.saveHost(host);
+                    found++;
+                });
+
+                if (found > 0) {
+                    render();
+                    Storage.getHosts().forEach(checkHost);
+                    App.showToast(
+                        'Found ' + found + ' new host' + (found !== 1 ? 's' : ''),
+                        'success'
+                    );
+                } else if (already > 0) {
+                    App.showToast(
+                        'No new hosts found (' + already + ' already added)',
+                        'info'
+                    );
+                } else {
+                    App.showToast('No Sunshine hosts found on this network', 'warning');
+                }
+            },
+            onFailure: function (err) {
+                if (scanCard)  scanCard.classList.remove('scanning');
+                if (scanLabel) scanLabel.textContent = 'Scan Network';
+                App.showToast(
+                    'Scan failed: ' + ((err && err.errorText) || 'Service unavailable'),
+                    'error'
+                );
+            },
+        });
+    }
+
     /* ── Public ── */
 
     return {
@@ -169,8 +237,9 @@ var HostDiscovery = (function () {
             grid.addEventListener('click', function (e) {
                 var el = e.target.closest('[data-action]');
                 if (!el) return;
-                if (el.dataset.action === 'select-host') onSelect(el.dataset.hostId);
-                if (el.dataset.action === 'add-host')    App.openModal('add-host');
+                if (el.dataset.action === 'select-host')  onSelect(el.dataset.hostId);
+                if (el.dataset.action === 'add-host')     App.openModal('add-host');
+                if (el.dataset.action === 'scan-network') scanNetwork();
             });
         },
 
@@ -181,6 +250,9 @@ var HostDiscovery = (function () {
         },
 
         onLeave: function () { /* nothing to clean up */ },
+
+        /** Trigger a Sunshine host network scan via the background service. */
+        scanNetwork: scanNetwork,
 
         /** Called from the "Add Host" modal. */
         addHost: function (ip, name) {
