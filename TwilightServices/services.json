@@ -1,8 +1,12 @@
 {
   "id": "com.twilightstream.client.service",
   "description": "Twilight Sunshine Host Discovery Service",
-  "engine": "node",
-  "executable": "sunshine_service.js",
+  "engine": [
+    {
+      "main": "sunshine_service.js",
+      "name": "nodejs"
+    }
+  ],
   "services": [
     {
       "name": "com.twilightstream.client.service",

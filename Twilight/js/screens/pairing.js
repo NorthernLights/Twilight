@@ -303,9 +303,10 @@ var Pairing = (function () {
          *
          * Fallback chain:
          *   1. Luna pairVerify (handles self-signed TLS via Node.js)
-         *   2. Direct HTTPS fetch (dev/browser mode)
-         *   3. Treat as paired – steps 1-4 already confirmed the PIN on
-         *      Sunshine's side; the pairchallenge is only a final handshake.  */
+         *   2. Direct HTTPS fetch (dev/browser mode; fails on self-signed certs)
+         *
+         * If both fail, pairing is aborted.  Step 5 is Sunshine's commit step:
+         * without it the device stays in PENDING state and /applist returns empty.  */
         setStatus('Step 5/5  Confirming pairing over HTTPS\u2026');
 
         var pairChallengeParams = {
@@ -369,12 +370,14 @@ var Pairing = (function () {
                 throw new Error('Step 5 (HTTPS) refused');
             }
         } else {
-            /* Both transport paths failed (likely self-signed TLS + service offline).
-             * Steps 1-4 already confirmed the PIN was accepted on Sunshine's side,
-             * so treat the pairing as complete and continue.                        */
-            console.warn('[Pairing] Step 5 unreachable (' +
-                (s5Error ? s5Error.message : 'unknown') +
-                ') – treating as paired (Sunshine accepted in steps 1-4).');
+            /* Both transport paths failed – abort.  Without Step 5 Sunshine
+             * keeps the device in PENDING state (not committed to its paired
+             * list), so /applist will return empty and pairing appears lost.  */
+            sendUnpair(ip);
+            throw new Error(
+                'Step 5 failed: ' + (s5Error ? s5Error.message : 'HTTPS unreachable') +
+                '.  Ensure TwilightServices is installed and running.'
+            );
         }
         /* Pairing complete! */
     }

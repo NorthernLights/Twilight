@@ -58,6 +58,17 @@ var AppList = (function () {
     function parseAppList(xml) {
         var parser = new DOMParser();
         var doc    = parser.parseFromString(xml, 'text/xml');
+
+        /* Sunshine returns status_code="200" on success; anything else means the
+         * request was rejected (e.g. unknown uniqueid, server error).            */
+        var root = doc.querySelector('root');
+        var code = root ? root.getAttribute('status_code') : null;
+        if (code !== null && code !== '200') {
+            console.error('[AppList] /applist rejected by host – status_code:', code,
+                          '(uniqueid may not be paired on this host)');
+            return [];
+        }
+
         var nodes  = doc.querySelectorAll('App');
         var apps   = [];
         nodes.forEach(function (n) {
@@ -84,30 +95,43 @@ var AppList = (function () {
 
         /* Sunshine requires uniqueid to authenticate /applist and return the
          * app list for this specific paired client.  Without it the server
-         * either rejects the request or returns an empty response.           */
-        var uid = (typeof TwilightIdentity !== 'undefined' && TwilightIdentity.isReady())
-            ? TwilightIdentity.getUniqueId()
-            : null;
-        var qs  = uid ? '?uniqueid=' + encodeURIComponent(uid) : '';
+         * either rejects the request or returns an empty response.
+         *
+         * Wait for identity to be ready (no-op if already initialised – the
+         * common case, because App.init() warms it up at startup).           */
+        var identityReady = (typeof TwilightIdentity !== 'undefined')
+            ? (TwilightIdentity.isReady() ? Promise.resolve() : TwilightIdentity.init())
+            : Promise.resolve();
 
-        var url = 'http://' + _host.ip + ':' + GS_HTTP_PORT + '/applist' + qs;
+        identityReady.then(function () {
+            var uid = (typeof TwilightIdentity !== 'undefined' && TwilightIdentity.isReady())
+                ? TwilightIdentity.getUniqueId()
+                : null;
+            var qs  = uid ? '?uniqueid=' + encodeURIComponent(uid) : '';
 
-        fetchText(url)
-            .then(function (xml) {
-                _apps = parseAppList(xml);
-                renderApps();
-                setLoading(false);
-            })
-            .catch(function (err) {
-                console.error('[AppList] fetch failed:', err);
-                setLoading(false);
-                showError();
-            });
+            var url = 'http://' + _host.ip + ':' + GS_HTTP_PORT + '/applist' + qs;
 
-        // Parallel: find currently running app (uniqueid needed for accurate response)
-        fetchText('http://' + _host.ip + ':' + GS_HTTP_PORT + '/serverinfo' + qs, 5000)
-            .then(function (xml) { _runningId = parseRunningApp(xml); renderApps(); })
-            .catch(function () {});
+            fetchText(url)
+                .then(function (xml) {
+                    _apps = parseAppList(xml);
+                    renderApps();
+                    setLoading(false);
+                })
+                .catch(function (err) {
+                    console.error('[AppList] fetch failed:', err);
+                    setLoading(false);
+                    showError();
+                });
+
+            // Parallel: find currently running app (uniqueid needed for accurate response)
+            fetchText('http://' + _host.ip + ':' + GS_HTTP_PORT + '/serverinfo' + qs, 5000)
+                .then(function (xml) { _runningId = parseRunningApp(xml); renderApps(); })
+                .catch(function () {});
+        }).catch(function (err) {
+            console.error('[AppList] Identity init failed:', err);
+            setLoading(false);
+            showError();
+        });
     }
 
     /* ── Render ── */
