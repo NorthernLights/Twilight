@@ -101,7 +101,14 @@ var HostDiscovery = (function () {
     /* ── Status Check ── */
 
     function checkHost(host) {
-        var url = 'http://' + host.ip + ':' + GS_HTTP_PORT + '/serverinfo';
+        /* Include our uniqueid so Sunshine returns the PairStatus specific to
+         * this client device.  Without it, Sunshine may return PairStatus=0
+         * even for a device that completed pairing.                           */
+        var uid = (typeof TwilightIdentity !== 'undefined' && TwilightIdentity.isReady())
+            ? TwilightIdentity.getUniqueId()
+            : null;
+        var url = 'http://' + host.ip + ':' + GS_HTTP_PORT + '/serverinfo' +
+            (uid ? '?uniqueid=' + encodeURIComponent(uid) : '');
 
         fetchWithTimeout(url, CHECK_TIMEOUT)
             .then(function (r) { return r.text(); })
@@ -116,7 +123,11 @@ var HostDiscovery = (function () {
                     var hostnameEl = doc.querySelector('hostname');
                     var pairEl     = doc.querySelector('PairStatus');
                     host.status = 'online';
-                    host.paired = pairEl ? pairEl.textContent === '1' : false;
+                    /* Only trust PairStatus when we sent uniqueid; without it the
+                     * server's response may not reflect this specific client.    */
+                    if (uid) {
+                        host.paired = pairEl ? pairEl.textContent === '1' : false;
+                    }
                     if (hostnameEl && hostnameEl.textContent) host.name = hostnameEl.textContent;
                 } else {
                     host.status = 'offline';
@@ -134,11 +145,22 @@ var HostDiscovery = (function () {
     function updateCard(host) {
         var card = document.querySelector('[data-host-id="' + host.id + '"]');
         if (!card) return;
-        var dot  = card.querySelector('.host-status-dot');
-        var lbl  = card.querySelector('.host-status-label');
-        var st   = host.status || 'unknown';
+        var dot   = card.querySelector('.host-status-dot');
+        var lbl   = card.querySelector('.host-status-label');
+        var badge = card.querySelector('.badge-pairing');
+        var st    = host.status || 'unknown';
         if (dot) dot.className = 'host-status-dot ' + st;
         if (lbl) { lbl.textContent = statusLabel(st); lbl.className = 'host-status-label ' + st; }
+        /* Sync the "Not Paired" badge with the current paired state */
+        if (host.paired && badge) {
+            badge.parentNode.removeChild(badge);
+        } else if (!host.paired && !badge) {
+            var newBadge = document.createElement('span');
+            newBadge.className = 'badge badge-pairing';
+            newBadge.style.cssText = 'align-self:flex-start;margin-top:auto';
+            newBadge.textContent = 'Not Paired';
+            card.appendChild(newBadge);
+        }
     }
 
     /* ── Host Selection ── */
@@ -258,8 +280,24 @@ var HostDiscovery = (function () {
 
         onEnter: function () {
             render();
-            Storage.getHosts().forEach(checkHost);
             Navigation.focusDefault();
+
+            /* Ensure TwilightIdentity is initialised before checking hosts so
+             * that uniqueid is available for accurate per-client PairStatus.
+             * On first launch there are no hosts, so the delay is moot.
+             * On subsequent launches, init() resolves immediately from storage. */
+            var runChecks = function () {
+                Storage.getHosts().forEach(checkHost);
+            };
+            if (typeof TwilightIdentity !== 'undefined') {
+                if (TwilightIdentity.isReady()) {
+                    runChecks();
+                } else {
+                    TwilightIdentity.init().then(runChecks, runChecks);
+                }
+            } else {
+                runChecks();
+            }
         },
 
         onLeave: function () { /* nothing to clean up */ },
