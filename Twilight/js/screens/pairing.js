@@ -1,126 +1,333 @@
+/*
+ * Copyright (C) 2025 Twilight Contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ */
 'use strict';
 
 /**
- * Pairing Screen
+ * Pairing Screen – full GameStream / Sunshine pairing protocol.
  *
- * Displays a 4-digit PIN and drives the Moonlight/GameStream pairing
- * handshake with the host.
+ * Protocol reference: moonlight-qt/app/backend/nvpairingmanager.cpp
  *
- * NOTE: Full cryptographic pairing (RSA key exchange, certificate pinning,
- * AES-CBC challenge) is stubbed here and marked TODO. The UI flow is complete
- * so the crypto layer can be dropped in without changing the screen logic.
+ * ┌─────┬──────────────────────────────────────────────────────────────────┐
+ * │Step │ Description                                                      │
+ * ├─────┼──────────────────────────────────────────────────────────────────┤
+ * │  1  │ GET /pair?phrase=getservercert&salt=…&clientcert=…               │
+ * │     │ Server returns its X.509 certificate (hex-PEM in <plaincert>).   │
+ * ├─────┼──────────────────────────────────────────────────────────────────┤
+ * │  2  │ GET /pair?clientchallenge=<AES-ECB(randomChallenge)>             │
+ * │     │ Server returns <challengeresponse> encrypted with the same key.  │
+ * ├─────┼──────────────────────────────────────────────────────────────────┤
+ * │  3  │ Decrypt challenge response.                                      │
+ * │     │ Build: serverChallenge || clientCertSig || clientSecret          │
+ * │     │ GET /pair?serverchallengeresp=<AES-ECB(SHA256(above))>           │
+ * │     │ Server returns <pairingsecret> = serverSecret || RSA-sig.        │
+ * ├─────┼──────────────────────────────────────────────────────────────────┤
+ * │  4  │ Verify server's RSA signature over serverSecret.                 │
+ * │     │ Verify PIN: SHA256(randomChallenge||serverCertSig||serverSecret) │
+ * │     │   must equal serverResponse (first 32 bytes of step-2 decrypt).  │
+ * │     │ GET /pair?clientpairingsecret=<clientSecret||RSA-sign(clientSecret)>│
+ * ├─────┼──────────────────────────────────────────────────────────────────┤
+ * │  5  │ GET https://<host>:47984/pair?phrase=pairchallenge               │
+ * │     │ Server confirms pairing over HTTPS.                              │
+ * └─────┴──────────────────────────────────────────────────────────────────┘
  *
- * Pairing flow overview (GameStream / Sunshine):
- *   1. Client generates random PIN + RSA-2048 key pair + self-signed cert
- *   2. GET /pair?devicename=...&updateState=1&phrase=getservercert&salt=...&clientcert=...
- *   3. Server shows PIN to user; user enters it
- *   4. Client polls GET /pair?...&phrase=pairchallenge  until paired
- *   5. On success, server returns paired=1
+ * AES key: SHA-256(salt || pin_utf8)[0:16]   (Gen 7+ / Sunshine = SHA-256)
+ * AES mode: ECB, no padding (simulated via TwilightCrypto.aesEcbEncrypt/Decrypt).
+ *
+ * Depends on: TwilightCrypto (js/crypto.js), TwilightIdentity (js/identity.js)
  */
 var Pairing = (function () {
 
-    var TIMEOUT_MS  = 60000;  // 60 s total pairing window
-    var POLL_MS     = 2500;   // poll every 2.5 s
-    var GS_HTTP_PORT = 47989;
+    /* ── Constants ── */
+    var GS_HTTP_PORT  = 47989;
+    var GS_HTTPS_PORT = 47984;
+    var TIMEOUT_MS    = 60000;
+    var DEVICE_NAME   = 'roth';  /* Moonlight sends "roth" as the devicename */
 
-    var _host      = null;
-    var _pin       = null;
-    var _active    = false;
-    var _timerId   = null;
-    var _pollId    = null;
-    var _startedAt = 0;
+    /* ── State ── */
+    var _host    = null;
+    var _pin     = null;
+    var _active  = false;
+    var _timerId = null;
 
-    /* ── PIN ── */
-
-    function generatePin() {
-        return String(Math.floor(1000 + Math.random() * 9000));
-    }
+    /* ══════════════════════════════════════════
+       UI helpers
+       ══════════════════════════════════════════ */
 
     function showPin(pin) {
         var digits = document.querySelectorAll('.pin-digit');
         pin.split('').forEach(function (ch, i) {
-            if (digits[i]) {
-                digits[i].textContent = '-';
-                digits[i].classList.remove('lit');
-                // Stagger reveal
-                (function (idx) {
-                    setTimeout(function () {
-                        if (digits[idx]) {
-                            digits[idx].textContent = ch;
-                            digits[idx].classList.add('lit');
-                        }
-                    }, idx * 160);
-                }(i));
-            }
+            if (!digits[i]) return;
+            digits[i].textContent = '-';
+            digits[i].classList.remove('lit');
+            (function (idx) {
+                setTimeout(function () {
+                    if (digits[idx]) {
+                        digits[idx].textContent = ch;
+                        digits[idx].classList.add('lit');
+                    }
+                }, idx * 160);
+            }(i));
         });
     }
-
-    /* ── Timeout bar ── */
 
     function startBar() {
         var fill = document.getElementById('timeout-fill');
         if (!fill) return;
         fill.style.transition = 'none';
-        fill.style.width      = '100%';
-        // Next frame: start shrinking
+        fill.style.width = '100%';
         requestAnimationFrame(function () {
             requestAnimationFrame(function () {
                 fill.style.transition = 'width ' + TIMEOUT_MS + 'ms linear';
-                fill.style.width      = '0%';
+                fill.style.width = '0%';
             });
         });
     }
 
-    /* ── Status text ── */
-
     function setStatus(msg) {
-        var p = document.querySelector('#pairing-status-msg');
+        var p = document.getElementById('pairing-status-msg');
         if (p) p.textContent = msg;
+        console.log('[Pairing]', msg);
     }
 
-    /* ── Pairing protocol stubs ── */
+    /* ══════════════════════════════════════════
+       XML helpers
+       ══════════════════════════════════════════ */
 
-    /**
-     * TODO: Implement full GameStream pairing crypto.
-     *
-     * Steps required:
-     *   1. Generate RSA-2048 key pair via WebCrypto API
-     *   2. Build self-signed X.509 cert (DER-encoded)
-     *   3. Derive salt from PIN using SHA-256
-     *   4. GET /pair?phrase=getservercert&salt=<hex>&clientcert=<hex-DER>
-     *   5. Parse server's cert from XML response
-     *   6. GET /pair?phrase=pairchallenge
-     *   7. Decrypt server challenge, re-encrypt, send back
-     *   8. GET /pair?phrase=clientchallenge&...
-     *   9. Verify and complete
-     *
-     * Until crypto is implemented, we show the PIN and let the user
-     * manually confirm on the host (e.g., via Sunshine web UI).
-     */
-    function beginPairing(host, pin) {
-        setStatus('Enter PIN on your host, then press OK in Sunshine / GameStream.');
-        console.log('[Pairing] PIN for', host.ip, ':', pin);
-
-        // TODO: replace with real HTTP pairing call
-        // startCryptoHandshake(host, pin);
+    function parseXml(text) {
+        return new DOMParser().parseFromString(text, 'text/xml');
     }
 
-    /* ── Completion handlers ── */
+    function xmlStr(doc, tag) {
+        var el = doc.querySelector(tag);
+        return el ? el.textContent.trim() : null;
+    }
 
-    function onSuccess() {
-        cleanup();
-        if (_host) {
-            _host.paired = true;
-            _host.status = 'online';
-            Storage.saveHost(_host);
-            App.showToast('Paired with ' + _host.name, 'success');
-            App.navigate('apps', { host: _host });
+    function xmlHex(doc, tag) {
+        var s = xmlStr(doc, tag);
+        return s ? TwilightCrypto.hexToBytes(s) : null;
+    }
+
+    function checkStatus(doc, step) {
+        var root = doc.querySelector('root');
+        var code = root ? root.getAttribute('status_code') : null;
+        if (code !== '200') {
+            throw new Error('Step ' + step + ': server returned status_code ' + code);
         }
     }
 
-    function onFailed(reason) {
+    /* ══════════════════════════════════════════
+       HTTP helpers
+       ══════════════════════════════════════════ */
+
+    function fetchXml(url, ms) {
+        return new Promise(function (resolve, reject) {
+            var ctrl  = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            var timer = setTimeout(function () {
+                if (ctrl) ctrl.abort();
+                reject(new Error('Timed out: ' + url));
+            }, ms || 8000);
+
+            fetch(url, ctrl ? { signal: ctrl.signal } : {})
+                .then(function (r) {
+                    clearTimeout(timer);
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.text();
+                })
+                .then(function (txt) { resolve(parseXml(txt)); })
+                .catch(function (e)  { clearTimeout(timer); reject(e); });
+        });
+    }
+
+    function buildUrl(scheme, ip, port, path, params) {
+        var qs = Object.keys(params).map(function (k) {
+            return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+        }).join('&');
+        return scheme + '://' + ip + ':' + port + '/' + path + '?' + qs;
+    }
+
+    function pairUrl(ip, extra) {
+        var params = {
+            uniqueid:    TwilightIdentity.getUniqueId(),
+            devicename:  DEVICE_NAME,
+            updateState: '1',
+        };
+        Object.keys(extra).forEach(function (k) { params[k] = extra[k]; });
+        return buildUrl('http', ip, GS_HTTP_PORT, 'pair', params);
+    }
+
+    function sendUnpair(ip) {
+        /* Fire-and-forget cleanup on any failure path */
+        fetch(buildUrl('http', ip, GS_HTTP_PORT, 'unpair', {
+            uniqueid:   TwilightIdentity.getUniqueId(),
+            devicename: DEVICE_NAME,
+        })).catch(function () {});
+    }
+
+    /* ══════════════════════════════════════════
+       Core pairing protocol (async)
+       ══════════════════════════════════════════ */
+
+    async function doPairing(host, pin) {
+        var ip = host.ip;
+
+        /* ── AES key derivation ─────────────────
+           aesKey = SHA-256(salt || pin_utf8)[0:16]   */
+        var salt      = TwilightCrypto.randomBytes(16);
+        var pinBytes  = new TextEncoder().encode(pin);
+        var saltedPin = new Uint8Array(salt.length + pinBytes.length);
+        saltedPin.set(salt, 0);
+        saltedPin.set(pinBytes, salt.length);
+        var aesKey = (await TwilightCrypto.sha256(saltedPin)).slice(0, 16);
+
+        /* ── Step 1: getservercert ────────────── */
+        setStatus('Step 1/5  Fetching server certificate…');
+        var s1 = await fetchXml(pairUrl(ip, {
+            phrase:     'getservercert',
+            salt:       TwilightCrypto.bytesToHex(salt),
+            clientcert: TwilightIdentity.getCertPemHex(),
+        }));
+        checkStatus(s1, 1);
+        if (xmlStr(s1, 'paired') !== '1') throw new Error('Step 1: server refused pairing');
+
+        var serverCertPemBytes = xmlHex(s1, 'plaincert');
+        if (!serverCertPemBytes) {
+            sendUnpair(ip);
+            throw new Error('Step 1: no plaincert (server may already be pairing)');
+        }
+        var serverCertPem = new TextDecoder().decode(serverCertPemBytes);
+        var serverCertDer = TwilightCrypto.pemToBytes(serverCertPem);
+
+        /* ── Step 2: clientchallenge ──────────── */
+        setStatus('Step 2/5  Sending challenge…');
+        var randomChallenge = TwilightCrypto.randomBytes(16);
+        var encChallenge    = await TwilightCrypto.aesEcbEncrypt(aesKey, randomChallenge);
+        var s2 = await fetchXml(pairUrl(ip, {
+            clientchallenge: TwilightCrypto.bytesToHex(encChallenge),
+        }));
+        checkStatus(s2, 2);
+        if (xmlStr(s2, 'paired') !== '1') { sendUnpair(ip); throw new Error('Step 2 refused'); }
+
+        var encResp   = xmlHex(s2, 'challengeresponse');
+        var respData  = await TwilightCrypto.aesEcbDecrypt(aesKey, encResp);
+        /* Layout (SHA-256, hashLength = 32):
+             [0 …31] serverResponse  – hash verified in step 4
+             [32…47] serverChallenge – 16-byte server nonce               */
+        var serverResponse  = respData.slice(0, 32);
+        var serverChallenge = respData.slice(32, 48);
+
+        /* ── Step 3: serverchallengeresp ─────── */
+        setStatus('Step 3/5  Answering server challenge…');
+        var clientSecret  = TwilightCrypto.randomBytes(16);
+        var clientCertSig = TwilightIdentity.getCertSignature();
+
+        /* challengeInput = serverChallenge || clientCertSig || clientSecret */
+        var challengeInput = new Uint8Array(
+            serverChallenge.length + clientCertSig.length + clientSecret.length
+        );
+        challengeInput.set(serverChallenge, 0);
+        challengeInput.set(clientCertSig,   serverChallenge.length);
+        challengeInput.set(clientSecret,    serverChallenge.length + clientCertSig.length);
+
+        var challengeHash    = await TwilightCrypto.sha256(challengeInput);  /* 32 bytes */
+        var encChallengeHash = await TwilightCrypto.aesEcbEncrypt(aesKey, challengeHash);
+
+        var s3 = await fetchXml(pairUrl(ip, {
+            serverchallengeresp: TwilightCrypto.bytesToHex(encChallengeHash),
+        }));
+        checkStatus(s3, 3);
+        if (xmlStr(s3, 'paired') !== '1') { sendUnpair(ip); throw new Error('Step 3 refused'); }
+
+        var pairingSecretRaw = xmlHex(s3, 'pairingsecret');
+        var serverSecret     = pairingSecretRaw.slice(0, 16);
+        var serverSignature  = pairingSecretRaw.slice(16);
+
+        /* ── Step 4: verify + clientpairingsecret */
+        setStatus('Step 4/5  Verifying server identity…');
+
+        /* 4a. Verify server signed serverSecret with its private key */
+        var sigOk = await TwilightCrypto.rsaVerify(serverSecret, serverSignature, serverCertDer);
+        if (!sigOk) {
+            sendUnpair(ip);
+            throw new Error('MITM attack detected: server signature invalid');
+        }
+
+        /* 4b. Verify PIN:
+               SHA256(randomChallenge || serverCertSig || serverSecret) == serverResponse */
+        var serverCertSig  = TwilightCrypto.parseCertSignature(serverCertDer);
+        var pinInput       = new Uint8Array(
+            randomChallenge.length + serverCertSig.length + serverSecret.length
+        );
+        pinInput.set(randomChallenge, 0);
+        pinInput.set(serverCertSig,   randomChallenge.length);
+        pinInput.set(serverSecret,    randomChallenge.length + serverCertSig.length);
+
+        var pinHash  = await TwilightCrypto.sha256(pinInput);
+        var pinMatch = (pinHash.length === serverResponse.length) &&
+            pinHash.every(function (b, i) { return b === serverResponse[i]; });
+        if (!pinMatch) {
+            sendUnpair(ip);
+            throw new Error('PIN incorrect');
+        }
+
+        /* 4c. Send clientPairingSecret = clientSecret || RSA-sign(clientSecret) */
+        setStatus('Step 4/5  Sending client pairing secret…');
+        var clientSig     = await TwilightCrypto.rsaSign(clientSecret, TwilightIdentity.getPrivateKey());
+        var clientSecret_ = new Uint8Array(clientSecret.length + clientSig.length);
+        clientSecret_.set(clientSecret, 0);
+        clientSecret_.set(clientSig,    clientSecret.length);
+
+        var s4 = await fetchXml(pairUrl(ip, {
+            clientpairingsecret: TwilightCrypto.bytesToHex(clientSecret_),
+        }));
+        checkStatus(s4, 4);
+        if (xmlStr(s4, 'paired') !== '1') { sendUnpair(ip); throw new Error('Step 4 refused'); }
+
+        /* ── Step 5: HTTPS pairchallenge ─────── */
+        setStatus('Step 5/5  Confirming pairing over HTTPS…');
+        var s5Url = buildUrl('https', ip, GS_HTTPS_PORT, 'pair', {
+            uniqueid:    TwilightIdentity.getUniqueId(),
+            devicename:  DEVICE_NAME,
+            updateState: '1',
+            phrase:      'pairchallenge',
+        });
+        var s5 = await fetchXml(s5Url, 10000);
+        checkStatus(s5, 5);
+        if (xmlStr(s5, 'paired') !== '1') {
+            sendUnpair(ip);
+            throw new Error('Step 5 (HTTPS) refused');
+        }
+        /* Pairing complete! */
+    }
+
+    /* ══════════════════════════════════════════
+       Outcome handlers
+       ══════════════════════════════════════════ */
+
+    function onSuccess() {
         cleanup();
-        App.showToast('Pairing failed' + (reason ? ': ' + reason : ''), 'error');
+        if (!_host) return;
+        _host.paired = true;
+        _host.status = 'online';
+        Storage.saveHost(_host);
+        App.showToast('Paired with ' + _host.name, 'success');
+        App.navigate('apps', { host: _host });
+    }
+
+    function onFailed(err) {
+        cleanup();
+        var msg = err && err.message ? err.message : String(err);
+        console.error('[Pairing] Error:', msg);
+        var toast = (msg.indexOf('PIN') !== -1)
+            ? 'Wrong PIN – please try again'
+            : 'Pairing failed: ' + msg;
+        App.showToast(toast, 'error');
         App.goBack();
     }
 
@@ -133,55 +340,67 @@ var Pairing = (function () {
     function cleanup() {
         _active = false;
         if (_timerId) { clearTimeout(_timerId); _timerId = null; }
-        if (_pollId)  { clearTimeout(_pollId);  _pollId  = null; }
     }
 
-    /* ── Public ── */
+    /* ══════════════════════════════════════════
+       Public screen API
+       ══════════════════════════════════════════ */
 
     return {
 
         init: function () {
-            // Both "cancel" buttons share the same data-action
             document.addEventListener('click', function (e) {
                 var el = e.target.closest('[data-action="cancel-pairing"]');
-                if (el && document.getElementById('screen-pairing').classList.contains('active')) {
-                    cleanup();
-                    App.goBack();
-                }
+                if (!el) return;
+                var screen = document.getElementById('screen-pairing');
+                if (!screen || !screen.classList.contains('active')) return;
+                cleanup();
+                App.goBack();
             });
         },
 
         onEnter: function (params) {
-            _host      = params && params.host ? params.host : null;
-            _pin       = generatePin();
-            _active    = true;
-            _startedAt = Date.now();
+            var self = this;
+            _host   = params && params.host ? params.host : null;
+            _active = true;
 
+            /* Show host name */
             if (_host) {
                 var nameEl = document.getElementById('pairing-host-name');
                 if (nameEl) nameEl.textContent = _host.name;
             }
 
+            /* Generate and display PIN */
+            _pin = String(Math.floor(1000 + Math.random() * 9000));
             showPin(_pin);
             startBar();
-            beginPairing(_host, _pin);
+            setStatus('Preparing secure identity…');
 
+            /* Start watchdog */
             _timerId = setTimeout(onTimeout, TIMEOUT_MS);
+
+            /* Ensure identity ready, then start protocol */
+            var identityReady = TwilightIdentity.isReady()
+                ? Promise.resolve()
+                : TwilightIdentity.init();
+
+            identityReady
+                .then(function () {
+                    if (!_active || !_host) return;
+                    return doPairing(_host, _pin);
+                })
+                .then(function () {
+                    if (_active) onSuccess();
+                })
+                .catch(function (e) {
+                    if (_active) onFailed(e);
+                });
+
             Navigation.focusDefault('btn-cancel-pairing');
         },
 
         onLeave: function () {
             cleanup();
-        },
-
-        /** External call: mark pairing as confirmed (for future HTTP poll completion). */
-        confirm: function () {
-            if (_active && _host) onSuccess();
-        },
-
-        /** External call: mark pairing as failed. */
-        fail: function (reason) {
-            if (_active) onFailed(reason);
         },
     };
 
