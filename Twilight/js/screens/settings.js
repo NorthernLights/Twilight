@@ -74,8 +74,9 @@ var Settings = (function () {
                 {
                     header: 'Twilight',
                     items: [
-                        { key: '_ver',  name: 'Version',          type: 'info', value: '1.0.0' },
-                        { key: '_svc',  name: 'Twilight Services', type: 'info', value: '\u2014' },
+                        { key: '_ver',   name: 'Version',          type: 'info', value: '1.0.0' },
+                        { key: '_build', name: 'Build',            type: 'info', value: (typeof TwilightBuild !== 'undefined' ? TwilightBuild : '\u2014') },
+                        { key: '_svc',   name: 'Twilight Services', type: 'info', value: '\u2014' },
                         { key: '_prot', name: 'Protocol',          type: 'info', value: 'Moonlight (GameStream / Sunshine)' },
                         { key: '_sdk',  name: 'webOS SDK', type: 'info', value: 'webOSTVjs 1.2.10' },
                         { key: '_lic',  name: 'License',   type: 'info', value: 'GNU GPL v3' },
@@ -84,8 +85,10 @@ var Settings = (function () {
                 {
                     header: 'Device',
                     items: [
-                        { key: '_model', name: 'TV Model', type: 'info', value: '—' },
-                        { key: '_wos',   name: 'webOS',    type: 'info', value: '—' },
+                        { key: '_model', name: 'TV Model',      type: 'info', value: '—' },
+                        { key: '_wos',   name: 'webOS',         type: 'info', value: '—' },
+                        { key: '_vdec',  name: 'Video Decoder', type: 'info', value: '—' },
+                        { key: '_abk',   name: 'Audio Backend', type: 'info', value: '—' },
                     ],
                 },
             ],
@@ -181,17 +184,90 @@ var Settings = (function () {
         renderPanel(_category);
     }
 
+    /* ── Helpers ── */
+
+    function updateAboutItem(key, value) {
+        SCHEMA.about.sections.forEach(function (section) {
+            section.items.forEach(function (item) {
+                if (item.key === key) item.value = value;
+            });
+        });
+    }
+
     /* ── Device info ── */
 
     function detectDevice() {
         if (typeof webOS === 'undefined') return;
         webOS.deviceInfo(function (info) {
-            // Cache values in schema for next render
-            SCHEMA.about.sections[1].items.forEach(function (item) {
-                if (item.key === '_model' && info.modelName) item.value = info.modelName;
-                if (item.key === '_wos'   && info.version)   item.value = 'webOS ' + (info.version.major || '');
-            });
+            if (info.modelName) updateAboutItem('_model', info.modelName);
+            if (info.version)   updateAboutItem('_wos',   'webOS ' + (info.version.major || ''));
             if (_category === 'about') renderPanel('about');
+        });
+    }
+
+    /** Detect supported video codecs via the MediaCapabilities API (Chrome 67+). */
+    function detectVideoDecoder() {
+        if (!navigator.mediaCapabilities || !navigator.mediaCapabilities.decodingInfo) {
+            updateAboutItem('_vdec', '—');
+            return;
+        }
+        var toTest = [
+            { label: 'AV1',   contentType: 'video/mp4; codecs="av01.0.08M.08"' },
+            { label: 'HEVC',  contentType: 'video/mp4; codecs="hvc1.1.6.L150.90"' },
+            { label: 'H.264', contentType: 'video/mp4; codecs="avc1.640028"' },
+        ];
+        var chain = Promise.resolve([]);
+        toTest.forEach(function (codec) {
+            chain = chain.then(function (acc) {
+                return navigator.mediaCapabilities.decodingInfo({
+                    type: 'media-source',
+                    video: { contentType: codec.contentType, width: 1920, height: 1080, bitrate: 20000000, framerate: 60 },
+                }).then(function (r) {
+                    if (r.supported) acc.push(codec.label);
+                    return acc;
+                }, function () { return acc; });
+            });
+        });
+        chain.then(function (supported) {
+            updateAboutItem('_vdec', supported.length > 0 ? supported.join(' / ') : '—');
+            if (_category === 'about') renderPanel('about');
+        }).catch(function () {
+            updateAboutItem('_vdec', '—');
+        });
+    }
+
+    /** Detect audio output via the webOS Luna audio service. */
+    function detectAudioBackend() {
+        if (typeof webOS === 'undefined') return;
+        var OUTPUT_LABELS = {
+            tv_speaker:       'Built-in Speakers',
+            external_arc:     'HDMI ARC',
+            external_optical: 'Optical',
+            bt_soundbar:      'Bluetooth',
+            wired_headphone:  'Headphones',
+        };
+        function applyOutput(soundOutput) {
+            var label = OUTPUT_LABELS[soundOutput] || soundOutput || 'LG Audio Engine';
+            updateAboutItem('_abk', label);
+            if (_category === 'about') renderPanel('about');
+        }
+        webOS.service.request('luna://com.webos.service.audio', {
+            method: 'getStatus',
+            parameters: { subscribe: false },
+            onSuccess: function (res) {
+                applyOutput(res.volumeStatus && res.volumeStatus.soundOutput);
+            },
+            onFailure: function () {
+                webOS.service.request('luna://com.webos.service.sound', {
+                    method: 'getSoundOutput',
+                    parameters: {},
+                    onSuccess: function (res2) { applyOutput(res2.soundOutput); },
+                    onFailure: function () {
+                        updateAboutItem('_abk', 'LG Audio Engine');
+                        if (_category === 'about') renderPanel('about');
+                    },
+                });
+            },
         });
     }
 
@@ -203,13 +279,13 @@ var Settings = (function () {
             parameters: {},
             onSuccess: function (result) {
                 if (!result.version) return;
-                SCHEMA.about.sections[0].items.forEach(function (item) {
-                    if (item.key === '_svc') item.value = result.version;
-                });
+                updateAboutItem('_svc', result.version);
                 if (_category === 'about') renderPanel('about');
             },
-            onFailure: function () {
-                // Service unavailable – keep the static fallback value
+            onFailure: function (err) {
+                console.error('[Settings] TwilightServices unavailable:', err && err.errorText);
+                updateAboutItem('_svc', 'Unavailable');
+                if (_category === 'about') renderPanel('about');
             },
         });
     }
@@ -243,6 +319,8 @@ var Settings = (function () {
         onEnter: function () {
             renderPanel('video');
             detectDevice();
+            detectVideoDecoder();
+            detectAudioBackend();
             detectTwilightServices();
         },
 
