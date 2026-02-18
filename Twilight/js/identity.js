@@ -27,13 +27,14 @@
  */
 var TwilightIdentity = (function () {
 
-    var STORAGE_KEY = 'twilight.identity';
-    var _id         = null;   /* string – 32-char hex */
-    var _privateKey = null;   /* CryptoKey */
-    var _certDer    = null;   /* Uint8Array */
-    var _certPem    = null;   /* string */
-    var _certSig    = null;   /* Uint8Array – raw sig bytes extracted from cert */
-    var _ready      = false;
+    var STORAGE_KEY  = 'twilight.identity';
+    var _id          = null;   /* string – 32-char hex */
+    var _privateKey  = null;   /* CryptoKey */
+    var _certDer     = null;   /* Uint8Array */
+    var _certPem     = null;   /* string */
+    var _certSig     = null;   /* Uint8Array – raw sig bytes extracted from cert */
+    var _ready       = false;
+    var _initPromise = null;   /* cached Promise while init is in-flight */
 
     /* ── Persistence ── */
 
@@ -75,50 +76,61 @@ var TwilightIdentity = (function () {
 
         /**
          * Initialise identity.  Must be awaited before any pairing call.
-         * Safe to call multiple times; subsequent calls are no-ops.
+         *
+         * Re-entrant safe: if two callers invoke init() before the first has
+         * finished (e.g. App startup + HostDiscovery both calling concurrently),
+         * the second caller receives the same in-flight Promise so only one
+         * key-generation / key-import ever runs.  This prevents two concurrent
+         * inits from generating conflicting identities and overwriting each
+         * other's _id / _certPem mid-pairing-handshake.
          */
-        init: async function () {
-            if (_ready) return;
+        init: function () {
+            if (_ready) return Promise.resolve();
+            if (_initPromise) return _initPromise;
 
-            var stored = load();
+            _initPromise = (async function () {
+                var stored = load();
 
-            if (stored && stored.uniqueId && stored.pkcs8Pem && stored.certPem) {
-                /* Restore from localStorage */
-                try {
-                    _id         = stored.uniqueId;
-                    _certPem    = stored.certPem;
-                    _certDer    = TwilightCrypto.pemToBytes(_certPem);
-                    _certSig    = TwilightCrypto.parseCertSignature(_certDer);
-                    _privateKey = await importPrivateKey(stored.pkcs8Pem);
-                    _ready = true;
-                    console.log('[Identity] Loaded from storage, uid:', _id);
-                    return;
-                } catch (e) {
-                    console.warn('[Identity] Stored identity corrupt, regenerating:', e);
+                if (stored && stored.uniqueId && stored.pkcs8Pem && stored.certPem) {
+                    /* Restore from localStorage */
+                    try {
+                        _id         = stored.uniqueId;
+                        _certPem    = stored.certPem;
+                        _certDer    = TwilightCrypto.pemToBytes(_certPem);
+                        _certSig    = TwilightCrypto.parseCertSignature(_certDer);
+                        _privateKey = await importPrivateKey(stored.pkcs8Pem);
+                        _ready = true;
+                        console.log('[Identity] Loaded from storage, uid:', _id);
+                        return;
+                    } catch (e) {
+                        console.warn('[Identity] Stored identity corrupt, regenerating:', e);
+                    }
                 }
-            }
 
-            /* Generate fresh identity */
-            console.log('[Identity] Generating new RSA-2048 identity…');
-            var uid = TwilightCrypto.bytesToHex(TwilightCrypto.randomBytes(16));
+                /* Generate fresh identity */
+                console.log('[Identity] Generating new RSA-2048 identity\u2026');
+                var uid = TwilightCrypto.bytesToHex(TwilightCrypto.randomBytes(16));
 
-            var identity = await TwilightCrypto.generateKeyAndCert();
+                var identity = await TwilightCrypto.generateKeyAndCert();
 
-            /* Export private key as PKCS#8 PEM for storage */
-            var pkcs8Der = new Uint8Array(
-                await window.crypto.subtle.exportKey('pkcs8', identity.privateKey)
-            );
-            var pkcs8Pem = TwilightCrypto.bytesToPem(pkcs8Der, 'PRIVATE KEY');
+                /* Export private key as PKCS#8 PEM for storage */
+                var pkcs8Der = new Uint8Array(
+                    await window.crypto.subtle.exportKey('pkcs8', identity.privateKey)
+                );
+                var pkcs8Pem = TwilightCrypto.bytesToPem(pkcs8Der, 'PRIVATE KEY');
 
-            _id         = uid;
-            _privateKey = identity.privateKey;
-            _certDer    = identity.certDer;
-            _certPem    = identity.certPem;
-            _certSig    = identity.certSig;
-            _ready      = true;
+                _id         = uid;
+                _privateKey = identity.privateKey;
+                _certDer    = identity.certDer;
+                _certPem    = identity.certPem;
+                _certSig    = identity.certSig;
+                _ready      = true;
 
-            save(uid, pkcs8Pem, _certPem);
-            console.log('[Identity] Generated new identity, uid:', _id);
+                save(uid, pkcs8Pem, _certPem);
+                console.log('[Identity] Generated new identity, uid:', _id);
+            }());
+
+            return _initPromise;
         },
 
         /** 32-hex-char unique device ID, sent as &uniqueid= in every request. */
@@ -160,6 +172,7 @@ var TwilightIdentity = (function () {
             localStorage.removeItem(STORAGE_KEY);
             _id = _privateKey = _certDer = _certPem = _certSig = null;
             _ready = false;
+            _initPromise = null;   /* allow a clean re-init after reset */
             console.log('[Identity] Identity wiped');
         },
     };

@@ -10,7 +10,7 @@
 'use strict';
 
 /** Short Git commit hash of the build that produced this package. */
-var TwilightBuild = 'd152494';
+var TwilightBuild = 'd495951';
 
 /** Version string from TwilightServices/package.json – synced at commit time. */
 var TwilightServicesVersion = '1.1.0';
