@@ -137,9 +137,11 @@ var TwilightIdentity = (function () {
         getUniqueId: function () { return _id; },
 
         /**
-         * Hex-encoded PEM bytes of the client certificate.
-         * This is what GameStream expects for the &clientcert= parameter:
-         *   hex( UTF-8 bytes of "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----\n" )
+         * Hex-encoded UTF-8 bytes of the PEM certificate string.
+         *
+         * NOTE: GameStream/Sunshine expects &clientcert= = hex(DER bytes), NOT
+         * hex(PEM text).  Use TwilightCrypto.bytesToHex(getCertDer()) when
+         * building the clientcert query parameter for the /pair endpoint.
          */
         getCertPemHex: function () {
             return TwilightCrypto.bytesToHex(new TextEncoder().encode(_certPem));

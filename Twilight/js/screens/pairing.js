@@ -188,10 +188,14 @@ var Pairing = (function () {
 
         /* ── Step 1: getservercert ────────────── */
         setStatus('Step 1/5  Fetching server certificate…');
+        /* GameStream protocol requires clientcert = hex(DER bytes).
+         * Sunshine's pairing handler calls d2i_X509() (a DER parser) on the
+         * hex-decoded value.  Sending hex(PEM text) causes a parse failure
+         * that makes the server hang/close the connection → 30 s timeout.    */
         var s1 = await fetchXml(pairUrl(ip, {
             phrase:     'getservercert',
             salt:       TwilightCrypto.bytesToHex(salt),
-            clientcert: TwilightIdentity.getCertPemHex(),
+            clientcert: TwilightCrypto.bytesToHex(TwilightIdentity.getCertDer()),
         }), 30000);
         checkStatus(s1, 1);
         if (xmlStr(s1, 'paired') !== '1') throw new Error('Step 1: server refused pairing');
