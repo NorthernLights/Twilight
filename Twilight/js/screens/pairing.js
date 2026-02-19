@@ -334,7 +334,16 @@ var Pairing = (function () {
 
                     webOS.service.request('luna://com.twilightstream.client.service', {
                         method:     'pairVerify',
-                        parameters: { ip: ip, port: GS_HTTPS_PORT, params: pairChallengeParams },
+                        parameters: {
+                            ip:      ip,
+                            port:    GS_HTTPS_PORT,
+                            params:  pairChallengeParams,
+                            /* TLS mutual-auth: Sunshine verifies the client cert
+                             * presented in the TLS handshake matches what was
+                             * registered in Step 1.                           */
+                            certPem: TwilightIdentity.getCertPem(),
+                            keyPem:  TwilightIdentity.getPrivateKeyPem(),
+                        },
                         onSuccess: function (res) {
                             clearTimeout(timer);
                             if (settled) return;
@@ -374,14 +383,33 @@ var Pairing = (function () {
                 throw new Error('Step 5 (HTTPS) refused');
             }
         } else {
-            /* Both transport paths failed – abort.  Without Step 5 Sunshine
-             * keeps the device in PENDING state (not committed to its paired
-             * list), so /applist will return empty and pairing appears lost.  */
-            sendUnpair(ip);
-            throw new Error(
-                'Step 5 failed: ' + (s5Error ? s5Error.message : 'HTTPS unreachable') +
-                '.  Ensure TwilightServices is installed and running.'
-            );
+            /* Both transport paths failed.  Before aborting, verify via HTTP
+             * /serverinfo whether steps 1-4 already committed this device to
+             * Sunshine's paired list.  Sunshine commits the pairing in step 4
+             * (clientpairingsecret); step 5 is an HTTPS confirmation of that
+             * already-committed state.  If /serverinfo reports PairStatus=1
+             * for our uniqueid the pairing is genuine and we proceed.        */
+            setStatus('Step 5/5  Verifying pairing status\u2026');
+            var verified = false;
+            try {
+                var infoDoc = await fetchXml(
+                    'http://' + ip + ':' + GS_HTTP_PORT +
+                    '/serverinfo?uniqueid=' + encodeURIComponent(TwilightIdentity.getUniqueId()),
+                    5000
+                );
+                var pairEl = infoDoc.querySelector('PairStatus');
+                verified   = !!(pairEl && pairEl.textContent.trim() === '1');
+            } catch (e2) {
+                console.warn('[Pairing] /serverinfo fallback check failed:', e2.message);
+            }
+            if (!verified) {
+                sendUnpair(ip);
+                throw new Error(
+                    'Step 5 failed: ' + (s5Error ? s5Error.message : 'HTTPS unreachable') +
+                    '.  Ensure TwilightServices is installed and running.'
+                );
+            }
+            console.log('[Pairing] Step 5 HTTPS unreachable; /serverinfo confirms paired.');
         }
         /* Pairing complete! */
     }

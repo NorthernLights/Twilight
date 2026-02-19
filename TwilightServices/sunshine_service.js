@@ -449,6 +449,11 @@ service.register('pairVerify', function (message) {
     var ip      = payload.ip;
     var port    = (typeof payload.port === 'number') ? payload.port : 47984;
     var params  = payload.params || {};
+    /* TLS mutual-auth credentials (optional but required by Sunshine for
+     * pairchallenge: Sunshine verifies the presented cert matches what was
+     * registered in step 1 of the pairing handshake).                      */
+    var certPem = (typeof payload.certPem === 'string' && payload.certPem) ? payload.certPem : null;
+    var keyPem  = (typeof payload.keyPem  === 'string' && payload.keyPem)  ? payload.keyPem  : null;
 
     if (!ip) {
         message.respond({ returnValue: false, errorText: '"ip" is required', errorCode: 1 });
@@ -473,10 +478,16 @@ service.register('pairVerify', function (message) {
         path:               '/pair?' + qs,
         method:             'GET',
         timeout:            12000,
-        /* Accept Sunshine's self-signed certificate.
+        /* Accept Sunshine's self-signed server certificate.
            Security is provided by the RSA/AES handshake in steps 1–4.      */
         rejectUnauthorized: false,
     };
+
+    /* Attach the client certificate/key when provided so that the TLS
+     * handshake presents our identity to Sunshine.  Sunshine's pairchallenge
+     * endpoint verifies the client cert matches the one from step 1.        */
+    if (certPem) options.cert = certPem;
+    if (keyPem)  options.key  = keyPem;
 
     console.log('[Sunshine] pairVerify →', 'https://' + ip + ':' + port + '/pair?' + qs);
 

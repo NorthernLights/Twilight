@@ -30,6 +30,7 @@ var TwilightIdentity = (function () {
     var STORAGE_KEY  = 'twilight.identity';
     var _id          = null;   /* string – 32-char hex */
     var _privateKey  = null;   /* CryptoKey */
+    var _pkcs8Pem    = null;   /* string – PKCS#8 PEM, for TLS client auth in pairVerify */
     var _certDer     = null;   /* Uint8Array */
     var _certPem     = null;   /* string */
     var _certSig     = null;   /* Uint8Array – raw sig bytes extracted from cert */
@@ -95,6 +96,7 @@ var TwilightIdentity = (function () {
                     /* Restore from localStorage */
                     try {
                         _id         = stored.uniqueId;
+                        _pkcs8Pem   = stored.pkcs8Pem;
                         _certPem    = stored.certPem;
                         _certDer    = TwilightCrypto.pemToBytes(_certPem);
                         _certSig    = TwilightCrypto.parseCertSignature(_certDer);
@@ -120,6 +122,7 @@ var TwilightIdentity = (function () {
                 var pkcs8Pem = TwilightCrypto.bytesToPem(pkcs8Der, 'PRIVATE KEY');
 
                 _id         = uid;
+                _pkcs8Pem   = pkcs8Pem;
                 _privateKey = identity.privateKey;
                 _certDer    = identity.certDer;
                 _certPem    = identity.certPem;
@@ -163,6 +166,14 @@ var TwilightIdentity = (function () {
         /** The RSA-2048 private key CryptoKey (for signing during pairing). */
         getPrivateKey: function () { return _privateKey; },
 
+        /**
+         * PKCS#8 PEM string of the private key.
+         * Passed to TwilightServices so it can present the client certificate
+         * in the TLS handshake for the Step 5 pairchallenge HTTPS request.
+         * Sunshine verifies this cert matches the one registered in Step 1.
+         */
+        getPrivateKeyPem: function () { return _pkcs8Pem; },
+
         /** True once init() has completed successfully. */
         isReady: function () { return _ready; },
 
@@ -172,7 +183,7 @@ var TwilightIdentity = (function () {
          */
         reset: function () {
             localStorage.removeItem(STORAGE_KEY);
-            _id = _privateKey = _certDer = _certPem = _certSig = null;
+            _id = _privateKey = _pkcs8Pem = _certDer = _certPem = _certSig = null;
             _ready = false;
             _initPromise = null;   /* allow a clean re-init after reset */
             console.log('[Identity] Identity wiped');
