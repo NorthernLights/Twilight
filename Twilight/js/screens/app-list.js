@@ -60,13 +60,16 @@ var AppList = (function () {
         var doc    = parser.parseFromString(xml, 'text/xml');
 
         /* Sunshine returns status_code="200" on success; anything else means the
-         * request was rejected (e.g. unknown uniqueid, server error).            */
+         * request was rejected (e.g. pairing pending, unknown uniqueid, server
+         * error).  Throw so the caller can show a proper error state rather than
+         * the misleading "No Games Found" empty state.                           */
         var root = doc.querySelector('root');
         var code = root ? root.getAttribute('status_code') : null;
         if (code !== null && code !== '200') {
             console.error('[AppList] /applist rejected by host – status_code:', code,
-                          '(uniqueid may not be paired on this host)');
-            return [];
+                          '(pairing may be incomplete; ensure pairchallenge succeeded)');
+            throw new Error('Host rejected the request (status ' + code + '). ' +
+                            'Pairing may be incomplete \u2013 try re-pairing.');
         }
 
         var nodes  = doc.querySelectorAll('App');
@@ -120,7 +123,7 @@ var AppList = (function () {
                 .catch(function (err) {
                     console.error('[AppList] fetch failed:', err);
                     setLoading(false);
-                    showError();
+                    showError(err && err.message ? err.message : undefined);
                 });
 
             // Parallel: find currently running app (uniqueid needed for accurate response)
@@ -199,13 +202,13 @@ var AppList = (function () {
         else        el.classList.add('hidden');
     }
 
-    function showError() {
+    function showError(msg) {
         var el = document.getElementById('apps-empty');
         if (!el) return;
         var h3 = el.querySelector('h3');
         var p  = el.querySelector('p');
         if (h3) h3.textContent = 'Failed to Load Games';
-        if (p)  p.textContent  = 'Could not reach host. Check your network connection.';
+        if (p)  p.textContent  = msg || 'Could not reach host. Check your network connection.';
         el.classList.remove('hidden');
     }
 

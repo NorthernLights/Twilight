@@ -141,10 +141,10 @@ var TwilightIdentity = (function () {
 
         /**
          * Hex-encoded UTF-8 bytes of the PEM certificate string.
-         *
-         * NOTE: GameStream/Sunshine expects &clientcert= = hex(DER bytes), NOT
-         * hex(PEM text).  Use TwilightCrypto.bytesToHex(getCertDer()) when
-         * building the clientcert query parameter for the /pair endpoint.
+         * This IS the correct format for Sunshine's &clientcert= parameter.
+         * Sunshine's pairing handler calls PEM_read_bio_X509() on the
+         * hex-decoded bytes, so it must receive PEM text, not raw DER.
+         *   value = hex( "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----\n" )
          */
         getCertPemHex: function () {
             return TwilightCrypto.bytesToHex(new TextEncoder().encode(_certPem));

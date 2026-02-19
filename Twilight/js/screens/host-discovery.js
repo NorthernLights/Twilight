@@ -101,9 +101,15 @@ var HostDiscovery = (function () {
     /* ── Status Check ── */
 
     function checkHost(host) {
-        /* Include our uniqueid so Sunshine returns the PairStatus specific to
-         * this client device.  Without it, Sunshine may return PairStatus=0
-         * even for a device that completed pairing.                           */
+        /* NOTE: Sunshine's HTTP /serverinfo endpoint ALWAYS returns
+         * PairStatus=0 regardless of actual pairing state.  Only the
+         * HTTPS endpoint returns PairStatus=1 (for any request that
+         * carries a uniqueid parameter).  We therefore do NOT update
+         * host.paired from this check – the paired flag is the sole
+         * responsibility of the pairing flow (pairing.js onSuccess).
+         *
+         * We still send uniqueid so Sunshine can log / rate-limit
+         * per-client, but we ignore the PairStatus in the response.  */
         var uid = (typeof TwilightIdentity !== 'undefined' && TwilightIdentity.isReady())
             ? TwilightIdentity.getUniqueId()
             : null;
@@ -121,13 +127,8 @@ var HostDiscovery = (function () {
 
                 if (code === '200') {
                     var hostnameEl = doc.querySelector('hostname');
-                    var pairEl     = doc.querySelector('PairStatus');
                     host.status = 'online';
-                    /* Only trust PairStatus when we sent uniqueid; without it the
-                     * server's response may not reflect this specific client.    */
-                    if (uid) {
-                        host.paired = pairEl ? pairEl.textContent === '1' : false;
-                    }
+                    /* Do NOT read or write host.paired here – see note above. */
                     if (hostnameEl && hostnameEl.textContent) host.name = hostnameEl.textContent;
                 } else {
                     host.status = 'offline';
