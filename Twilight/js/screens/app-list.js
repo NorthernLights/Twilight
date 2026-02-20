@@ -192,6 +192,38 @@ var AppList = (function () {
         return card;
     }
 
+    /* ── Unpair ── */
+
+    /**
+     * Send a GameStream /unpair request to the host, clear the local paired
+     * flag, and navigate back to the host list.
+     *
+     * The HTTP unpair endpoint does not require TLS, so we use fetch() directly
+     * rather than routing through TwilightServices.
+     */
+    function unpairHost() {
+        if (!_host) return;
+
+        var uid = (typeof TwilightIdentity !== 'undefined' && TwilightIdentity.isReady())
+            ? TwilightIdentity.getUniqueId()
+            : null;
+
+        if (uid) {
+            /* Fire-and-forget – the local state update below is authoritative */
+            fetch('http://' + _host.ip + ':' + GS_HTTP_PORT +
+                  '/unpair?uniqueid=' + encodeURIComponent(uid) +
+                  '&devicename=roth'
+            ).catch(function () {});
+        }
+
+        _host.paired = false;
+        Storage.saveHost(_host);
+
+        App.showToast('Unpaired from ' + _host.name, 'info');
+        App.closeModal();
+        App.goBack();
+    }
+
     /* ── State Helpers ── */
 
     function setLoading(show) {
@@ -232,6 +264,28 @@ var AppList = (function () {
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', function () { if (_host) loadApps(); });
             }
+
+            /* Unpair button – opens confirmation modal */
+            var unpairBtn = document.querySelector('[data-action="unpair-host"]');
+            if (unpairBtn) {
+                unpairBtn.addEventListener('click', function () {
+                    var msgEl = document.getElementById('unpair-confirm-msg');
+                    if (msgEl && _host) {
+                        msgEl.textContent =
+                            'Remove Twilight from \u201c' + _host.name +
+                            '\u2019s paired clients? You will need to re-pair to use this host.';
+                    }
+                    App.openModal('unpair-confirm');
+                });
+            }
+
+            /* Confirm / cancel inside the unpair modal */
+            document.addEventListener('click', function (e) {
+                var el = e.target.closest('[data-action]');
+                if (!el) return;
+                if (el.dataset.action === 'confirm-unpair')  unpairHost();
+                if (el.dataset.action === 'cancel-unpair')   App.closeModal();
+            });
         },
 
         onEnter: function (params) {

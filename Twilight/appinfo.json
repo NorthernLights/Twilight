@@ -9,6 +9,7 @@
   "largeIcon": "largeIcon.png",
   "allowCrossDomain": true,
   "allowMediaAudio": true,
+  "minWebOSVersion": "6.0.0",
   "requiredPermissions": [
     "MEDIA_OPERATION",
     "MEDIA_CONTROLLER",

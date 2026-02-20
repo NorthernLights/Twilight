@@ -89,12 +89,37 @@
       </div>
       <div class="header-actions">
         <button class="btn-icon focusable"
+                data-action="unpair-host"
+                data-nav-id="btn-unpair-host"
+                tabindex="0"
+                aria-label="Unpair Host"
+                title="Unpair Host">&#x26D3;</button>
+        <button class="btn-icon focusable"
                 data-action="refresh-apps"
                 data-nav-id="btn-refresh-apps"
                 tabindex="0"
                 aria-label="Refresh">↻</button>
       </div>
     </header>
+
+    <!-- Unpair confirmation modal -->
+    <div id="modal-unpair-confirm" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="unpair-modal-title">
+      <div class="modal-backdrop"></div>
+      <div class="modal-box">
+        <h2 id="unpair-modal-title" class="modal-title">Unpair Host</h2>
+        <p id="unpair-confirm-msg">Remove Twilight from this host&#8217;s paired clients? You will need to re-pair to use this host.</p>
+        <div class="modal-actions">
+          <button class="btn btn-danger focusable"
+                  data-action="confirm-unpair"
+                  data-nav-id="btn-confirm-unpair"
+                  tabindex="0">Unpair</button>
+          <button class="btn btn-secondary focusable"
+                  data-action="cancel-unpair"
+                  data-nav-id="btn-cancel-unpair"
+                  tabindex="0">Cancel</button>
+        </div>
+      </div>
+    </div>
 
     <main class="screen-content">
       <div id="apps-loading" class="state-loading hidden">

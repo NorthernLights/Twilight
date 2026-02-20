@@ -478,9 +478,13 @@ service.register('pairVerify', function (message) {
         path:               '/pair?' + qs,
         method:             'GET',
         timeout:            12000,
-        /* Accept Sunshine's self-signed server certificate.
+        /* Accept Sunshine's self-signed OR Let's Encrypt server certificate.
+           rejectUnauthorized skips CA chain validation; checkServerIdentity
+           skips the hostname check (needed when connecting by IP to a host
+           whose Let's Encrypt cert was issued for a domain name).
            Security is provided by the RSA/AES handshake in steps 1–4.      */
-        rejectUnauthorized: false,
+        rejectUnauthorized:  false,
+        checkServerIdentity: function () { return undefined; },
     };
 
     /* Attach the client certificate/key when provided so that the TLS
@@ -509,6 +513,71 @@ service.register('pairVerify', function (message) {
         reply({ returnValue: false, errorText: e.message, errorCode: 3 });
     });
 
+    req.end();
+});
+
+/**
+ * unpair – Send a GameStream/Sunshine unpair request for this client.
+ *
+ * The HTTP /unpair endpoint is reachable directly from the browser, so this
+ * Luna method is provided as an alternative route for environments where
+ * cross-origin HTTP is restricted.
+ *
+ * Request payload:
+ *   ip         {string}  Sunshine host IP address
+ *   uniqueid   {string}  Client unique ID (as used during pairing)
+ *   devicename {string}  Device name (default: "roth")
+ *
+ * Response on success: { returnValue: true, xml: "<root>...</root>" }
+ * Response on failure: { returnValue: false, errorText: "...", errorCode: N }
+ */
+service.register('unpair', function (message) {
+    var payload    = message.payload || {};
+    var ip         = payload.ip;
+    var uniqueid   = payload.uniqueid   || '';
+    var devicename = payload.devicename || 'roth';
+
+    if (!ip || !uniqueid) {
+        message.respond({ returnValue: false, errorText: '"ip" and "uniqueid" are required', errorCode: 1 });
+        return;
+    }
+
+    var qs = 'uniqueid=' + encodeURIComponent(uniqueid) +
+             '&devicename=' + encodeURIComponent(devicename);
+
+    var responded = false;
+    function reply(obj) {
+        if (responded) return;
+        responded = true;
+        message.respond(obj);
+    }
+
+    var opts = {
+        host:    ip,
+        port:    GS_HTTP_PORT,
+        path:    '/unpair?' + qs,
+        method:  'GET',
+        timeout: 5000,
+    };
+
+    console.log('[Sunshine] unpair →', 'http://' + ip + ':' + GS_HTTP_PORT + '/unpair?' + qs);
+
+    var req = http.request(opts, function (res) {
+        var body = '';
+        res.on('data', function (chunk) { body += chunk; });
+        res.on('end',  function () {
+            console.log('[Sunshine] unpair ←', body.slice(0, 200));
+            reply({ returnValue: true, xml: body });
+        });
+    });
+
+    req.on('timeout', function () {
+        req.destroy();
+        reply({ returnValue: false, errorText: 'unpair timed out', errorCode: 2 });
+    });
+    req.on('error', function (e) {
+        reply({ returnValue: false, errorText: e.message, errorCode: 3 });
+    });
     req.end();
 });
 

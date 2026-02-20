@@ -300,37 +300,31 @@ var Pairing = (function () {
 
         /* ── Step 5: HTTPS pairchallenge ─────────────────────────────────
          *
-         * Sunshine requires a mutual-TLS HTTPS request to port 47984 to
-         * confirm the pairchallenge step.  The server presents its TLS cert
-         * (self-signed in stock Sunshine; Let's Encrypt-signed in Vibeshine)
-         * and requires the client to present the cert registered in step 1.
+         * Sunshine/Vibeshine requires a mutual-TLS HTTPS request to port 47984
+         * to PERSIST the pairing to its client database.  Without a successful
+         * pairchallenge the device stays in a transient "pending" state and
+         * subsequent /applist requests receive status 404.
+         *
+         * The server presents its TLS cert (self-signed in stock Sunshine;
+         * Let's Encrypt-signed in Vibeshine) and verifies the client presents
+         * the cert registered in step 1.
          *
          * Problem with direct fetch() in Chrome/webOS:
          *   • Self-signed cert  → rejected by browser (untrusted CA)
          *   • Let's Encrypt cert on Vibeshine → cert is browser-trusted, but
          *     is issued for a domain name, not an IP address.  Connecting via
-         *     IP causes ERR_CERT_COMMON_NAME_INVALID even though the CA is
-         *     trusted.  Both cases fail with a browser-level fetch error.
+         *     IP causes ERR_CERT_COMMON_NAME_INVALID.  Both cases fail.
          *
          * Primary path: Luna pairVerify via TwilightServices (Node.js with
-         *   rejectUnauthorized: false bypasses all server-cert checks; the
+         *   rejectUnauthorized: false + checkServerIdentity bypass; the
          *   client cert is still presented for Sunshine's mutual-TLS auth).
+         *   TwilightServices MUST be installed on this device.
          *
-         * Fallback: direct HTTPS fetch (works only with no cert issues; will
-         *   fail in most real deployments but is kept as a dev-mode path).
+         * Fallback: direct HTTPS fetch (works only without cert issues; kept
+         *   as a dev-mode / simulator convenience path).
          *
-         * If both paths fail: pairing still proceeds.
-         *   Sunshine commits the pairing in step 4 (clientpairingsecret) via
-         *   RSA/AES challenge-response.  Step 5 is a CLIENT-side confirmation
-         *   over HTTPS – its failure is a transport issue, not a pairing
-         *   failure.  Sunshine's /applist will accept our uniqueid because the
-         *   device is already in its paired-clients list after step 4.
-         *
-         *   IMPORTANT: Sunshine's HTTP /serverinfo ALWAYS returns PairStatus=0
-         *   regardless of actual pairing state.  Only HTTPS /serverinfo returns
-         *   PairStatus=1 (for any request that includes a uniqueid parameter).
-         *   An HTTP /serverinfo check is therefore not a reliable fallback and
-         *   has been removed.                                                   */
+         * If both paths fail: pairing FAILS.  The error is surfaced to the
+         *   user so they know to install/restart TwilightServices.             */
         setStatus('Step 5/5  Confirming pairing over HTTPS\u2026');
 
         var pairChallengeParams = {
@@ -406,28 +400,23 @@ var Pairing = (function () {
                 throw new Error('Step 5 (HTTPS) refused');
             }
         } else {
-            /* Both transport paths failed.
+            /* Both transport paths failed – pairing cannot complete.
              *
-             * Steps 1–4 already committed this device to Sunshine's paired
-             * list via a cryptographic challenge–response exchange (AES-ECB +
-             * RSA-2048).  Step 5 is a client-side HTTPS confirmation that
-             * failed due to a transport/TLS issue, NOT a pairing failure.
+             * Sunshine/Vibeshine persists the device to its client database
+             * ONLY after a successful pairchallenge (step 5).  Without it,
+             * /applist returns status 404 and the device stays pending.
              *
-             * We do NOT call sendUnpair() here.  The device IS legitimately
-             * paired in Sunshine; revoking it would be wrong.
-             *
-             * Sunshine will accept /applist and all subsequent requests for
-             * this uniqueid because the authorisation was committed in step 4.
-             *
-             * Common causes of step 5 failure:
-             *   • TwilightServices not installed/running on this Simulator
-             *     build (install the .ipk and restart the app)
+             * Common causes:
+             *   • TwilightServices not installed/running on this device
+             *     or Simulator build (build and install the .ipk)
+             *   • TLS configuration mismatch (cipher, protocol version)
              *   • Vibeshine Let's Encrypt cert: hostname mismatch when
-             *     connecting via IP (browser fetch only; Luna path bypasses)  */
-            console.warn(
-                '[Pairing] Step 5 HTTPS unreachable (' +
-                (s5Error ? s5Error.message : 'no transport available') +
-                '). Steps 1\u20134 committed pairing; proceeding to app list.'
+             *     connecting by IP (Luna path uses rejectUnauthorized: false
+             *     to bypass this – ensure TwilightServices is running)       */
+            throw new Error(
+                'Pairing step 5 (HTTPS pairchallenge) failed' +
+                (s5Error ? ': ' + s5Error.message : '') +
+                '.\nEnsure TwilightServices is installed and running on this device.'
             );
         }
         /* Pairing complete! */
