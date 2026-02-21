@@ -12,9 +12,10 @@
 /**
  * Settings Screen
  *
- * Left panel: category navigation (Video / Audio / Input / About).
+ * Left panel: category navigation (Video / Audio / Input / Network / About).
  * Right panel: settings items rendered from a declarative schema.
  * OK/Enter on a setting cycles through its options.
+ * Action-type items invoke a callback (e.g. Reset Pairing Identity).
  */
 var Settings = (function () {
 
@@ -74,6 +75,39 @@ var Settings = (function () {
                 },
             ],
         },
+        network: {
+            label: 'Network',
+            sections: [
+                {
+                    header: 'Wireless',
+                    items: [
+                        { key: '_net_wifi_name',      name: 'Interface',  type: 'info', value: '\u2014' },
+                        { key: '_net_wifi_ssid',      name: 'Network',    type: 'info', value: '\u2014' },
+                        { key: '_net_wifi_connected', name: 'Connected',  type: 'info', value: '\u2014' },
+                        { key: '_net_wifi_default',   name: 'Default',    type: 'info', value: '\u2014' },
+                        { key: '_net_wifi_ipv4',      name: 'IPv4',       type: 'info', value: '\u2014' },
+                        { key: '_net_wifi_ipv6',      name: 'IPv6',       type: 'info', value: '\u2014' },
+                    ],
+                },
+                {
+                    header: 'Wired (Ethernet)',
+                    items: [
+                        { key: '_net_eth_name',      name: 'Interface',  type: 'info', value: '\u2014' },
+                        { key: '_net_eth_connected', name: 'Connected',  type: 'info', value: '\u2014' },
+                        { key: '_net_eth_default',   name: 'Default',    type: 'info', value: '\u2014' },
+                        { key: '_net_eth_ipv4',      name: 'IPv4',       type: 'info', value: '\u2014' },
+                        { key: '_net_eth_ipv6',      name: 'IPv6',       type: 'info', value: '\u2014' },
+                    ],
+                },
+                {
+                    header: 'DNS Servers',
+                    items: [
+                        { key: '_net_dns1', name: 'Primary DNS',   type: 'info', value: '\u2014' },
+                        { key: '_net_dns2', name: 'Secondary DNS', type: 'info', value: '\u2014' },
+                    ],
+                },
+            ],
+        },
         about: {
             label: 'About',
             sections: [
@@ -97,6 +131,17 @@ var Settings = (function () {
                         { key: '_abk',   name: 'Audio Backend', type: 'info', value: '—' },
                     ],
                 },
+                {
+                    header: 'Client Identity',
+                    items: [
+                        { key: '_uid',      name: 'Device ID',
+                          type: 'info', value: '\u2014' },
+                        { key: '_reset_id', name: 'Reset Pairing Identity',
+                          desc: 'Generates a new device certificate. All paired hosts must be re-paired.',
+                          type: 'action',
+                          handler: function () { openResetIdentityModal(); } },
+                    ],
+                },
             ],
         },
     };
@@ -104,7 +149,8 @@ var Settings = (function () {
     /* ── Rendering ── */
 
     function displayValue(item, val) {
-        if (item.type === 'info')   return item.value || '—';
+        if (item.type === 'info')   return item.value || '\u2014';
+        if (item.type === 'action') return '';
         if (item.type === 'toggle') return val ? 'On' : 'Off';
         if (item.fmt)               return item.fmt(val);
         if (item.labels) {
@@ -133,9 +179,9 @@ var Settings = (function () {
         cat.sections.forEach(function (section) {
             html += '<div class="settings-group-header">' + section.header + '</div>';
             section.items.forEach(function (item) {
-                var val     = item.type === 'info' ? item.value : _settings[item.key];
-                var disp    = displayValue(item, val);
-                var isInfo  = item.type === 'info';
+                var isInfo   = item.type === 'info';
+                var val      = (isInfo || item.type === 'action') ? item.value : _settings[item.key];
+                var disp     = displayValue(item, val);
                 var rowClass = isInfo ? 'setting-row' : 'setting-row focusable';
                 html +=
                     '<div class="' + rowClass + '"' +
@@ -173,6 +219,11 @@ var Settings = (function () {
         var item = allItems().filter(function (i) { return i.key === key; })[0];
         if (!item || item.type === 'info') return;
 
+        if (item.type === 'action') {
+            if (item.handler) item.handler();
+            return;
+        }
+
         var cur = _settings[key];
         var next;
 
@@ -197,6 +248,103 @@ var Settings = (function () {
             section.items.forEach(function (item) {
                 if (item.key === key) item.value = value;
             });
+        });
+    }
+
+    function updateNetworkItem(key, value) {
+        SCHEMA.network.sections.forEach(function (section) {
+            section.items.forEach(function (item) {
+                if (item.key === key) item.value = value;
+            });
+        });
+    }
+
+    /* ── Reset Identity ── */
+
+    function openResetIdentityModal() {
+        App.openModal('reset-identity');
+    }
+
+    function resetIdentity() {
+        if (typeof TwilightIdentity === 'undefined') {
+            App.showToast('Identity module not available', 'error');
+            App.closeModal();
+            return;
+        }
+        /* Wipe the device certificate and clear paired state on all saved hosts */
+        TwilightIdentity.reset();
+        Storage.getHosts().forEach(function (host) {
+            host.paired = false;
+            Storage.saveHost(host);
+        });
+        /* Regenerate a fresh identity immediately */
+        TwilightIdentity.init().then(function () {
+            updateAboutItem('_uid', TwilightIdentity.getUniqueId());
+            if (_category === 'about') renderPanel('about');
+            App.showToast('Pairing identity reset. Re-pair with all hosts.', 'success');
+        }).catch(function (e) {
+            console.error('[Settings] Identity regeneration failed:', e);
+            App.showToast('Identity reset failed: ' + e.message, 'error');
+        });
+        App.closeModal();
+    }
+
+    /* ── Network Detection ── */
+
+    function detectNetwork() {
+        if (typeof webOS === 'undefined') {
+            updateNetworkItem('_net_wifi_connected', 'N/A (browser mode)');
+            updateNetworkItem('_net_eth_connected',  'N/A (browser mode)');
+            if (_category === 'network') renderPanel('network');
+            return;
+        }
+        webOS.service.request('luna://com.webos.service.connectionmanager', {
+            method: 'getStatus',
+            parameters: { subscribe: false },
+            onSuccess: function (res) {
+                var wifi  = res.wifi  || {};
+                var wired = res.wired || {};
+
+                /* Wireless */
+                updateNetworkItem('_net_wifi_name',
+                    wifi.interfaceName || '\u2014');
+                updateNetworkItem('_net_wifi_ssid',
+                    wifi.connected ? (wifi.ssid || '\u2014') : 'Not connected');
+                updateNetworkItem('_net_wifi_connected',
+                    wifi.connected ? 'Yes' : 'No');
+                updateNetworkItem('_net_wifi_default',
+                    wifi.isDefault ? 'Yes' : 'No');
+                updateNetworkItem('_net_wifi_ipv4',
+                    (wifi.connected && wifi.ipAddress)   ? wifi.ipAddress   : '\u2014');
+                updateNetworkItem('_net_wifi_ipv6',
+                    (wifi.connected && wifi.ipv6Address) ? wifi.ipv6Address : '\u2014');
+
+                /* Wired */
+                updateNetworkItem('_net_eth_name',
+                    wired.interfaceName || '\u2014');
+                updateNetworkItem('_net_eth_connected',
+                    wired.connected ? 'Yes' : 'No');
+                updateNetworkItem('_net_eth_default',
+                    wired.isDefault ? 'Yes' : 'No');
+                updateNetworkItem('_net_eth_ipv4',
+                    (wired.connected && wired.ipAddress)   ? wired.ipAddress   : '\u2014');
+                updateNetworkItem('_net_eth_ipv6',
+                    (wired.connected && wired.ipv6Address) ? wired.ipv6Address : '\u2014');
+
+                /* DNS – from the default interface, falling back to WiFi */
+                var active = wifi.isDefault ? wifi : (wired.isDefault ? wired : wifi);
+                updateNetworkItem('_net_dns1', active.dns1 || '\u2014');
+                updateNetworkItem('_net_dns2', active.dns2 || '\u2014');
+
+                if (_category === 'network') renderPanel('network');
+            },
+            onFailure: function (err) {
+                console.error('[Settings] connectionmanager getStatus failed:',
+                    err && err.errorText);
+                updateNetworkItem('_net_wifi_connected', 'Unavailable');
+                updateNetworkItem('_net_eth_connected',  'Unavailable');
+                if (_category === 'network') renderPanel('network');
+            },
         });
     }
 
@@ -322,18 +470,31 @@ var Settings = (function () {
                 nav.addEventListener('click', function (e) {
                     var btn = e.target.closest('.settings-nav-btn');
                     if (!btn || !btn.dataset.category) return;
-                    renderPanel(btn.dataset.category);
-                    /* Re-query the service version each time About is opened
-                       so it always reflects the current TwilightServices build. */
-                    if (btn.dataset.category === 'about') detectTwilightServices();
+                    var cat = btn.dataset.category;
+                    /* Populate Device ID before rendering About so it is visible
+                     * immediately, without waiting for the async service call. */
+                    if (cat === 'about' &&
+                        typeof TwilightIdentity !== 'undefined' &&
+                        TwilightIdentity.isReady()) {
+                        updateAboutItem('_uid', TwilightIdentity.getUniqueId());
+                    }
+                    renderPanel(cat);
+                    if (cat === 'about')   detectTwilightServices();
+                    if (cat === 'network') detectNetwork();
                 });
             }
 
             var screen = document.getElementById('screen-settings');
             if (screen) {
                 screen.addEventListener('click', function (e) {
+                    /* Setting row activation */
                     var row = e.target.closest('.setting-row.focusable');
                     if (row && row.dataset.key) cycleSetting(row.dataset.key);
+                    /* Reset-identity modal actions */
+                    var el = e.target.closest('[data-action]');
+                    if (!el) return;
+                    if (el.dataset.action === 'confirm-reset-identity') resetIdentity();
+                    if (el.dataset.action === 'cancel-reset-identity')  App.closeModal();
                 });
             }
         },
@@ -345,6 +506,12 @@ var Settings = (function () {
             detectVideoDecoder();
             detectAudioBackend();
             detectTwilightServices();
+            /* Populate Device ID in About schema so it is ready when the user
+             * navigates to the About category; TwilightIdentity is initialised
+             * during App.init() so it should be ready by the time Settings opens. */
+            if (typeof TwilightIdentity !== 'undefined' && TwilightIdentity.isReady()) {
+                updateAboutItem('_uid', TwilightIdentity.getUniqueId());
+            }
         },
 
         onLeave: function () {

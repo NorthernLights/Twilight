@@ -110,6 +110,15 @@ var TwilightCrypto = (function () {
         function ctx0(items)   { return tlv(0xa0, concat.apply(null, items)); }
 
         function integer(raw) {
+            /* Strip unnecessary leading 0x00 bytes (canonical DER INTEGER).
+             * OpenSSL's i2d_X509 re-encodes using minimal form, so any cert we
+             * send with a non-canonical serial causes an X509_cmp mismatch in
+             * Sunshine's pairchallenge verify callback. */
+            var start = 0;
+            while (start < raw.length - 1 && raw[start] === 0x00 && (raw[start + 1] & 0x80) === 0) {
+                start++;
+            }
+            if (start > 0) raw = raw.slice(start);
             /* Ensure positive (prepend 0x00 if high bit set) */
             var data = (raw[0] & 0x80) ? concat(new Uint8Array([0x00]), raw) : raw;
             return tlv(0x02, data);
@@ -350,7 +359,8 @@ var TwilightCrypto = (function () {
 
         /* 3. Build TBSCertificate */
         var serial = randomBytes(16);
-        serial[0] &= 0x7f;  /* ensure positive */
+        serial[0] &= 0x7f;          /* ensure positive */
+        if (serial[0] === 0x00) serial[0] = 0x01;  /* prevent leading zero in DER integer */
 
         var now    = new Date();
         var expiry = new Date(Date.UTC(now.getUTCFullYear() + 20,

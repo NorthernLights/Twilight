@@ -20,8 +20,9 @@
  */
 var HostDiscovery = (function () {
 
-    var GS_HTTP_PORT  = 47989;
-    var CHECK_TIMEOUT = 5000;  // ms
+    var GS_HTTP_PORT     = 47989;
+    var CHECK_TIMEOUT    = 5000;   // ms
+    var _pendingRemoveId = null;   // host ID awaiting removal confirmation
 
     /* ── Utilities ── */
 
@@ -181,6 +182,33 @@ var HostDiscovery = (function () {
         App.navigate('apps', { host: host });
     }
 
+    /* ── Remove Host ── */
+
+    function openRemoveHostModal(hostId) {
+        var host = Storage.getHost(hostId);
+        if (!host) return;
+        _pendingRemoveId = hostId;
+        var msgEl = document.getElementById('remove-host-confirm-msg');
+        if (msgEl) {
+            msgEl.textContent =
+                'Remove \u201c' + host.name + '\u201d from Twilight? ' +
+                'This does not unpair the device from Sunshine.';
+        }
+        App.openModal('remove-host');
+    }
+
+    function removeHost(hostId) {
+        if (!hostId) return;
+        var host = Storage.getHost(hostId);
+        var name = host ? host.name : 'Host';
+        Storage.removeHost(hostId);
+        _pendingRemoveId = null;
+        App.closeModal();
+        render();
+        Navigation.focusDefault();
+        App.showToast('\u201c' + name + '\u201d removed', 'info');
+    }
+
     /* ── Network Scan ── */
 
     var _scanning = false;  // guard against concurrent scan requests
@@ -276,6 +304,26 @@ var HostDiscovery = (function () {
                 if (!el) return;
                 if (el.dataset.action === 'select-host')  onSelect(el.dataset.hostId);
                 if (el.dataset.action === 'scan-network') scanNetwork();
+            });
+
+            /* Remove-host modal buttons */
+            var screen = document.getElementById('screen-hosts');
+            if (screen) {
+                screen.addEventListener('click', function (e) {
+                    var el = e.target.closest('[data-action]');
+                    if (!el) return;
+                    if (el.dataset.action === 'confirm-remove-host') removeHost(_pendingRemoveId);
+                    if (el.dataset.action === 'cancel-remove-host')  App.closeModal();
+                });
+            }
+
+            /* RED key (403) on a focused host card opens the remove confirmation */
+            document.addEventListener('keydown', function (e) {
+                if (e.keyCode !== Keys.RED) return;
+                var active = document.activeElement;
+                if (!active || !active.dataset.hostId) return;
+                e.preventDefault();
+                openRemoveHostModal(active.dataset.hostId);
             });
         },
 

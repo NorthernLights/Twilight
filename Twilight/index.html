@@ -65,8 +65,28 @@
       </div>
     </main>
 
+    <!-- Remove-host confirmation modal -->
+    <div id="modal-remove-host" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="remove-host-modal-title">
+      <div class="modal-backdrop"></div>
+      <div class="modal-box">
+        <h2 id="remove-host-modal-title" class="modal-title">Remove Host</h2>
+        <p id="remove-host-confirm-msg">Remove this host from Twilight? This does not unpair the device from Sunshine.</p>
+        <div class="modal-actions">
+          <button class="btn btn-danger focusable"
+                  data-action="confirm-remove-host"
+                  data-nav-id="btn-confirm-remove-host"
+                  tabindex="0">Remove</button>
+          <button class="btn btn-secondary focusable"
+                  data-action="cancel-remove-host"
+                  data-nav-id="btn-cancel-remove-host"
+                  tabindex="0">Cancel</button>
+        </div>
+      </div>
+    </div>
+
     <footer class="screen-footer">
       <div class="hint"><span class="key-hint">OK</span> Select</div>
+      <div class="hint"><span class="key-hint" style="background:#c0392b;color:#fff">&#9632;</span> Remove</div>
       <div class="hint"><span class="key-hint">⚙</span> Settings</div>
     </footer>
   </section>
@@ -251,6 +271,12 @@
           <span class="nav-icon">&#127918;</span>Input
         </button>
         <button class="settings-nav-btn focusable"
+                data-category="network"
+                data-nav-id="s-cat-network"
+                tabindex="0">
+          <span class="nav-icon">&#127760;</span>Network
+        </button>
+        <button class="settings-nav-btn focusable"
                 data-category="about"
                 data-nav-id="s-cat-about"
                 tabindex="0">
@@ -262,6 +288,25 @@
       <div id="settings-panel" class="settings-panel"></div>
 
     </main>
+
+    <!-- Reset Pairing Identity confirmation modal -->
+    <div id="modal-reset-identity" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="reset-id-modal-title">
+      <div class="modal-backdrop"></div>
+      <div class="modal-box">
+        <h2 id="reset-id-modal-title" class="modal-title">Reset Pairing Identity</h2>
+        <p>This will delete your device certificate and all pairing data. You will need to re-pair with every host. This cannot be undone.</p>
+        <div class="modal-actions">
+          <button class="btn btn-secondary focusable"
+                  data-action="cancel-reset-identity"
+                  data-nav-id="btn-cancel-reset-id"
+                  tabindex="0">Cancel</button>
+          <button class="btn btn-danger focusable"
+                  data-action="confirm-reset-identity"
+                  data-nav-id="btn-confirm-reset-id"
+                  tabindex="0">Reset</button>
+        </div>
+      </div>
+    </div>
 
     <footer class="screen-footer">
       <div class="hint"><span class="key-hint">OK</span> Change</div>
