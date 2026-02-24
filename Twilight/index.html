@@ -84,9 +84,29 @@
       </div>
     </div>
 
+    <!-- Unpair-host confirmation modal (home screen) -->
+    <div id="modal-host-unpair" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="host-unpair-modal-title">
+      <div class="modal-backdrop"></div>
+      <div class="modal-box">
+        <h2 id="host-unpair-modal-title" class="modal-title">Unpair Host</h2>
+        <p id="host-unpair-confirm-msg">Remove Twilight from this host&#8217;s paired clients? You will need to re-pair to stream games.</p>
+        <div class="modal-actions">
+          <button class="btn btn-danger focusable"
+                  data-action="confirm-host-unpair"
+                  data-nav-id="btn-confirm-host-unpair"
+                  tabindex="0">Unpair</button>
+          <button class="btn btn-secondary focusable"
+                  data-action="cancel-host-unpair"
+                  data-nav-id="btn-cancel-host-unpair"
+                  tabindex="0">Cancel</button>
+        </div>
+      </div>
+    </div>
+
     <footer class="screen-footer">
       <div class="hint"><span class="key-hint">OK</span> Select</div>
       <div class="hint"><span class="key-hint" style="background:#c0392b;color:#fff">&#9632;</span> Remove</div>
+      <div class="hint"><span class="key-hint" style="background:#d4ac0d;color:#000">&#9632;</span> Unpair</div>
       <div class="hint"><span class="key-hint">⚙</span> Settings</div>
     </footer>
   </section>

@@ -32,6 +32,9 @@ var https   = require('https');
 var tls     = require('tls');
 var net     = require('net');
 var os      = require('os');
+var fs      = require('fs');
+var path    = require('path');
+var crypto  = require('crypto');
 
 var service = new Service(pkgInfo.name);
 
@@ -50,6 +53,10 @@ var MDNS_SERVICE_TYPES = [
 var DEFAULT_SCAN_TIMEOUT = 5000;   // ms – discovery window
 var HTTP_VERIFY_TIMEOUT  = 3000;   // ms – per /serverinfo request
 var TCP_PROBE_TIMEOUT    = 500;    // ms – per TCP port-open check
+
+/** Temp-file paths for the pairing cert/key written by storePairingCert. */
+var PAIRING_CERT_PATH = path.join(os.tmpdir(), 'twilight_pair_cert.pem');
+var PAIRING_KEY_PATH  = path.join(os.tmpdir(), 'twilight_pair_key.pem');
 
 // ── DNS Packet Utilities ─────────────────────────────────────────────────────
 
@@ -487,55 +494,99 @@ function pkcs8ToPkcs1(pem) {
 }
 
 /**
+ * storePairingCert – Persist the client certificate and private key to temp
+ * files on disk so that pairVerify can load them without passing large PEM
+ * strings through the Luna IPC bus on every call.
+ *
+ * This mirrors the file-based approach used by moonlight-tv (libgamestream
+ * stores client.pem / key.pem on disk and passes file paths to libcurl's
+ * CURLOPT_SSLCERT / CURLOPT_SSLKEY).
+ *
+ * Must be called once before pairVerify during a pairing session.
+ *
+ * Request payload:
+ *   certPem {string}  PEM-encoded client X.509 certificate
+ *   keyPem  {string}  PEM-encoded client private key (PKCS#8 from WebCrypto)
+ *
+ * Response on success: { returnValue: true }
+ * Response on failure: { returnValue: false, errorText: "...", errorCode: N }
+ *   errorCode 1 – missing required field
+ *   errorCode 2 – filesystem write error
+ */
+service.register('storePairingCert', function (message) {
+    var payload = message.payload || {};
+    var certPem = (typeof payload.certPem === 'string' && payload.certPem) ? payload.certPem : null;
+    var keyPem  = (typeof payload.keyPem  === 'string' && payload.keyPem)  ? payload.keyPem  : null;
+
+    if (!certPem || !keyPem) {
+        message.respond({ returnValue: false,
+            errorText: 'certPem and keyPem are required', errorCode: 1 });
+        return;
+    }
+
+    try {
+        fs.writeFileSync(PAIRING_CERT_PATH, certPem, 'utf8');
+        fs.writeFileSync(PAIRING_KEY_PATH,  keyPem,  'utf8');
+        console.log('[Sunshine] storePairingCert: cert=' + certPem.length +
+            'B key=' + keyPem.length + 'B → ' + os.tmpdir());
+        message.respond({ returnValue: true });
+    } catch (e) {
+        console.error('[Sunshine] storePairingCert write error:', e.message);
+        message.respond({ returnValue: false, errorText: e.message, errorCode: 2 });
+    }
+});
+
+/**
  * pairVerify – Perform the GameStream/Sunshine HTTPS pairing-challenge step.
  *
  * Sunshine's pairchallenge endpoint (port 47984) uses mutual TLS: the server
- * requires the client to present the X.509 certificate that was registered in
- * step 1 of the pairing handshake.  Chrome / webOS's browser fetch() cannot
- * be used here because:
- *   • Self-signed Sunshine cert → untrusted CA → ERR_CERT_AUTHORITY_INVALID
- *   • Vibeshine Let's Encrypt cert → issued for a domain, not the IP address
- *     used by the client → ERR_CERT_COMMON_NAME_INVALID
+ * verifies the client presents the X.509 certificate registered in step 1 of
+ * the pairing handshake.  Browser fetch() is unsuitable because:
+ *   • Self-signed Sunshine cert  → ERR_CERT_AUTHORITY_INVALID
+ *   • Vibeshine Let's Encrypt cert → ERR_CERT_COMMON_NAME_INVALID (IP vs domain)
  *
- * Implementation uses tls.connect() directly for explicit client-cert control.
- * The private key is converted from PKCS#8 to PKCS#1 before use for
- * compatibility with all Node.js versions in the webOS service runtime.
+ * Implementation mirrors moonlight-tv's libcurl approach:
+ *   CURLOPT_SSLCERT / CURLOPT_SSLKEY  → https.Agent({ cert, key })
+ *   CURLOPT_SSL_VERIFYPEER 0          → rejectUnauthorized: false
+ *   CURLOPT_SSL_VERIFYHOST 0          → checkServerIdentity: () => undefined
+ *   CURLOPT_FORBID_REUSE   1          → keepAlive: false (fresh socket per call)
  *
- * HTTP/1.0 is used intentionally: the server closes the TCP connection after
- * sending the response body, giving a clean 'end' event without chunked-
- * transfer-encoding parsing.
+ * Cert/key are loaded from temp files written by storePairingCert (avoids
+ * passing large PEM strings through Luna IPC on every call).  Falls back to
+ * inline parameters for backward compatibility with older pairing.js.
+ *
+ * The private key is converted PKCS#8 → PKCS#1 before use; some webOS
+ * service Node.js runtimes do not accept PKCS#8 for TLS client auth.
+ *
+ * A TCP probe runs first so network / firewall problems produce an explicit
+ * errorCode 6 rather than a generic TLS error or timeout.
  *
  * Request payload:
  *   ip      {string}  Sunshine host IP address
  *   port    {number}  HTTPS port (default: 47984)
  *   params  {object}  Query-string parameters (key/value strings)
- *   certPem {string}  PEM-encoded client X.509 certificate
- *   keyPem  {string}  PEM-encoded client private key (PKCS#8 from WebCrypto)
+ *   certPem {string}  (optional) PEM cert fallback if files are missing
+ *   keyPem  {string}  (optional) PEM key fallback if files are missing
  *
  * Response on success: { returnValue: true, xml: "<root>...</root>" }
  * Response on failure: { returnValue: false, errorText: "...", errorCode: N }
  *   errorCode 1 – missing required field
- *   errorCode 2 – overall timeout (12 s)
- *   errorCode 3 – TLS / socket error (errorText contains Node.js error code)
- *   errorCode 4 – tls.connect() threw synchronously (e.g. key format error)
- *   errorCode 5 – TLS handshake OK but server returned empty body
+ *   errorCode 2 – overall timeout (13 s)
+ *   errorCode 3 – TLS / HTTPS error (errorText contains Node.js error code)
+ *   errorCode 4 – https.Agent or https.request threw synchronously
+ *   errorCode 5 – HTTPS OK but server returned empty body
+ *   errorCode 6 – TCP probe failed (port unreachable / refused)
  */
 service.register('pairVerify', function (message) {
     var payload = message.payload || {};
     var ip      = payload.ip;
     var port    = (typeof payload.port === 'number') ? payload.port : 47984;
     var params  = payload.params || {};
-    var certPem = (typeof payload.certPem === 'string' && payload.certPem) ? payload.certPem : null;
-    var keyPem  = (typeof payload.keyPem  === 'string' && payload.keyPem)  ? payload.keyPem  : null;
 
     if (!ip) {
         message.respond({ returnValue: false, errorText: '"ip" is required', errorCode: 1 });
         return;
     }
-
-    var qs = Object.keys(params).map(function (k) {
-        return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
-    }).join('&');
 
     var responded = false;
     function reply(obj) {
@@ -544,94 +595,180 @@ service.register('pairVerify', function (message) {
         message.respond(obj);
     }
 
-    /* Convert PKCS#8 → PKCS#1 for TLS client-cert compatibility.
-     * WebCrypto exports as PKCS#8; some webOS service Node.js runtimes only
-     * accept the traditional PKCS#1 ("RSA PRIVATE KEY") form for TLS.       */
+    /* ── Load cert/key: prefer temp files, fall back to inline params ────── */
+    var certPem    = null;
+    var keyPem     = null;
+    var certSource = 'none';
+    try {
+        certPem    = fs.readFileSync(PAIRING_CERT_PATH, 'utf8');
+        keyPem     = fs.readFileSync(PAIRING_KEY_PATH,  'utf8');
+        certSource = 'file';
+        console.log('[Sunshine] pairVerify: cert from file cert=' +
+            certPem.length + 'B key=' + keyPem.length + 'B');
+    } catch (fsErr) {
+        /* Files not written yet – use inline Luna parameters if provided.   */
+        certPem = (typeof payload.certPem === 'string' && payload.certPem)
+            ? payload.certPem : null;
+        keyPem  = (typeof payload.keyPem  === 'string' && payload.keyPem)
+            ? payload.keyPem  : null;
+        certSource = (certPem || keyPem) ? 'inline' : 'none';
+        console.log('[Sunshine] pairVerify: cert source=' + certSource +
+            ' cert=' + (certPem ? certPem.length : 0) +
+            'B key=' + (keyPem  ? keyPem.length  : 0) +
+            'B (no files: ' + fsErr.code + ')');
+    }
+
+    /* Convert PKCS#8 → PKCS#1 for compatibility with all Node.js TLS
+     * runtimes bundled in the webOS service SDK.                            */
     var keyForTls = keyPem ? pkcs8ToPkcs1(keyPem) : null;
-
-    var tlsOpts = {
-        host:                ip,
-        port:                port,
-        rejectUnauthorized:  false,
-        checkServerIdentity: function () { return undefined; },
-    };
-    if (certPem)   tlsOpts.cert = certPem;
-    if (keyForTls) tlsOpts.key  = keyForTls;
-
-    var keyType = keyForTls
+    var keyType   = keyForTls
         ? (keyForTls.indexOf('RSA PRIVATE KEY') >= 0 ? 'PKCS#1' : 'PKCS#8')
         : 'none';
-    console.log('[Sunshine] pairVerify → tls.connect',
-        ip + ':' + port, '| cert:', !!certPem, '| key:', keyType);
 
-    var rawBuf = '';
-    var killed = false;
-    var socket;   /* declared before the timer so the guard below is safe */
+    var qs = Object.keys(params).map(function (k) {
+        return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+    }).join('&');
 
-    /* Hard deadline covering both the TLS handshake and HTTP response.
-     * socket may be undefined if tls.connect() threw, hence the guard.      */
+    console.log('[Sunshine] pairVerify → ' + ip + ':' + port +
+        ' cert:' + certSource + ' key:' + keyType);
+
+    /* SHA-256 fingerprint of the client cert DER – compare this value with
+     * the cert registered in pairchallenge step 1 to confirm they match.   */
+    if (certPem) {
+        try {
+            var b64fp = certPem.replace(/-----[^\n]+-----/g, '').replace(/\s+/g, '');
+            var certDerFp = Buffer.from(b64fp, 'base64');
+            var fp = crypto.createHash('sha256').update(certDerFp).digest('hex');
+            console.log('[Sunshine] pairVerify cert SHA-256:', fp);
+        } catch (fpErr) {
+            console.warn('[Sunshine] pairVerify: fingerprint calc failed:', fpErr.message);
+        }
+    }
+
+    /* Hard deadline: fires if both the TCP probe AND the HTTPS request
+     * somehow fail to call reply() within 13 s.                            */
+    var tlsSocket    = null;    /* set in doHttpsRequest(); destroyed by overallTimer if needed */
+
     var overallTimer = setTimeout(function () {
-        killed = true;
-        if (socket) socket.destroy();
-        reply({ returnValue: false, errorText: 'pairVerify timed out (12 s)', errorCode: 2 });
-    }, 12000);
+        console.error('[Sunshine] pairVerify: overall timeout');
+        try { tcpSock.destroy(); }          catch (e) { /* may already be destroyed */ }
+        if (tlsSocket) { try { tlsSocket.destroy(); } catch (e) {} }
+        reply({ returnValue: false,
+            errorText: 'pairVerify timed out (13 s)', errorCode: 2 });
+    }, 13000);
 
-    /* Wrap tls.connect in try/catch: in some Node.js versions a bad key
-     * format (or other invalid option) throws synchronously rather than
-     * emitting an 'error' event.  Without this the handler exits without
-     * calling reply(), leaving the Luna caller waiting until its own timer
-     * fires – which manifests as "service call timed out" in the UI.        */
-    try {
-        socket = tls.connect(tlsOpts, function () {
-            /* This callback fires ONLY after the TLS handshake succeeds.
-             * Any rejection by the server (bad cert, wrong version, etc.)
-             * goes to socket.on('error') instead.                          */
-            var ci = socket.getCipher ? socket.getCipher() : null;
-            console.log('[Sunshine] pairVerify: TLS handshake OK',
-                '| cipher:', ci ? ci.name : 'n/a',
-                '| cert sent:', !!certPem);
+    /* ── Step 1: TCP probe ────────────────────────────────────────────────
+     * Verifies port 47984 is reachable before TLS negotiation begins.
+     * A failure here means a network / firewall problem, not a TLS problem.  */
+    var tcpDone = false;
+    var tcpSock = new net.Socket();
+    tcpSock.setTimeout(3000);
 
-            /* HTTP/1.0 forces the server to close after the response body. */
-            socket.write(
-                'GET /pair?' + qs + ' HTTP/1.0\r\n' +
-                'Host: ' + ip + ':' + port + '\r\n' +
-                '\r\n'
-            );
-        });
+    tcpSock.on('connect', function () {
+        if (tcpDone) return;
+        tcpDone = true;
+        tcpSock.destroy();
+        console.log('[Sunshine] pairVerify: TCP probe OK → starting TLS');
+        doHttpsRequest();
+    });
+    tcpSock.on('timeout', function () {
+        if (tcpDone) return;
+        tcpDone = true;
+        tcpSock.destroy();
+        clearTimeout(overallTimer);
+        console.error('[Sunshine] pairVerify: TCP timeout ' + ip + ':' + port);
+        reply({ returnValue: false,
+            errorText: 'Port ' + port + ' not reachable on ' + ip +
+                ' (TCP timeout). Verify Sunshine HTTPS port is open.',
+            errorCode: 6 });
+    });
+    tcpSock.on('error', function (e) {
+        if (tcpDone) return;
+        tcpDone = true;
+        tcpSock.destroy();
+        clearTimeout(overallTimer);
+        console.error('[Sunshine] pairVerify: TCP error ' + ip + ':' + port,
+            e.code, e.message);
+        reply({ returnValue: false,
+            errorText: 'Port ' + port + ' refused on ' + ip +
+                ' (' + (e.code || e.message) + '). Check Sunshine HTTPS port.',
+            errorCode: 6 });
+    });
 
-        socket.on('data', function (chunk) {
-            rawBuf += chunk.toString('utf8');
-        });
+    tcpSock.connect(port, ip);
 
-        socket.on('end', function () {
+    /* ── Step 2: TLS connection with mutual auth ──────────────────────────
+     * Uses tls.connect() directly – mirrors moonlight-tv's approach:
+     *   CURLOPT_SSLCERT / CURLOPT_SSLKEY  → tlsOpts.cert / tlsOpts.key
+     *   CURLOPT_SSL_VERIFYPEER 0          → rejectUnauthorized: false
+     *   CURLOPT_SSL_VERIFYHOST 0          → checkServerIdentity: () => undefined
+     *
+     * The tls.connect callback fires only after the TLS handshake completes
+     * (including client-cert exchange), guaranteeing the cert is presented
+     * before any HTTP data is sent.  We then send a raw HTTP/1.0 GET; the
+     * server closes the connection after the response body, giving a clean
+     * 'end' event with no chunked-encoding to deal with.                    */
+    function doHttpsRequest() {
+        var tlsOpts = {
+            host:                ip,
+            port:                port,
+            rejectUnauthorized:  false,
+            checkServerIdentity: function () { return undefined; },
+        };
+        if (certPem)   tlsOpts.cert = certPem;
+        if (keyForTls) tlsOpts.key  = keyForTls;
+
+        try {
+            tlsSocket = tls.connect(tlsOpts, function () {
+                /* Fires only after TLS handshake – client cert already sent. */
+                var proto  = tlsSocket.getProtocol  ? tlsSocket.getProtocol()  : 'unknown';
+                var cipher = tlsSocket.getCipher     ? tlsSocket.getCipher()    : {};
+                console.log('[Sunshine] pairVerify: TLS handshake OK' +
+                    ' proto=' + proto +
+                    ' cipher=' + (cipher.name || '?') +
+                    ' clientCert=' + (certPem ? 'yes(' + certPem.length + 'B)' : 'NO') +
+                    ' keyType=' + keyType);
+                tlsSocket.write(
+                    'GET /pair?' + qs + ' HTTP/1.0\r\n' +
+                    'Host: ' + ip + ':' + port + '\r\n' +
+                    'Connection: close\r\n' +
+                    '\r\n'
+                );
+            });
+        } catch (e) {
             clearTimeout(overallTimer);
-            var sep  = rawBuf.indexOf('\r\n\r\n');
-            var body = (sep >= 0) ? rawBuf.slice(sep + 4) : rawBuf;
-            console.log('[Sunshine] pairVerify ← body:', body.slice(0, 200));
-            if (!body.trim()) {
+            console.error('[Sunshine] pairVerify: tls.connect threw:', e.message);
+            reply({ returnValue: false,
+                errorText: 'tls.connect threw: ' + e.message, errorCode: 4 });
+            return;
+        }
+
+        var body = '';
+        tlsSocket.on('data',  function (chunk) { body += chunk; });
+        tlsSocket.on('end',   function () {
+            clearTimeout(overallTimer);
+            /* Strip HTTP response headers – everything before the blank line. */
+            var sep = body.indexOf('\r\n\r\n');
+            var xml = (sep >= 0 ? body.slice(sep + 4) : body).trim();
+            console.log('[Sunshine] pairVerify ← xml:', xml.slice(0, 200));
+            if (!xml) {
                 reply({ returnValue: false,
-                    errorText: 'pairVerify: server closed connection with empty body',
-                    errorCode: 5 });
+                    errorText: 'Server returned empty body', errorCode: 5 });
             } else {
-                reply({ returnValue: true, xml: body });
+                reply({ returnValue: true, xml: xml });
             }
         });
-
-        socket.on('error', function (e) {
-            if (killed) return;
+        tlsSocket.on('error', function (e) {
             clearTimeout(overallTimer);
-            console.error('[Sunshine] pairVerify error:', e.code || '', e.message);
+            console.error('[Sunshine] pairVerify TLS/socket error:',
+                e.code || '', e.message);
             reply({ returnValue: false,
-                errorText: (e.code ? e.code + ': ' : '') + e.message,
-                errorCode: 3 });
+                errorText: (e.code ? e.code + ': ' : '') + e.message, errorCode: 3 });
         });
-
-    } catch (tlsErr) {
-        clearTimeout(overallTimer);
-        console.error('[Sunshine] pairVerify: tls.connect threw:', tlsErr.message);
-        reply({ returnValue: false,
-            errorText: 'TLS init: ' + tlsErr.message,
-            errorCode: 4 });
+        tlsSocket.setTimeout(9000, function () {
+            console.error('[Sunshine] pairVerify: TLS socket timed out');
+            tlsSocket.destroy(new Error('TLS socket timed out after 9 s'));
+        });
     }
 });
 

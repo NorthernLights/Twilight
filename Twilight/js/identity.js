@@ -103,6 +103,9 @@ var TwilightIdentity = (function () {
                         _privateKey = await importPrivateKey(stored.pkcs8Pem);
                         _ready = true;
                         console.log('[Identity] Loaded from storage, uid:', _id);
+                        TwilightCrypto.sha256(_certDer).then(function (fp) {
+                            console.log('[Identity] Cert SHA-256:', TwilightCrypto.bytesToHex(fp));
+                        });
                         return;
                     } catch (e) {
                         console.warn('[Identity] Stored identity corrupt, regenerating:', e);
@@ -131,6 +134,9 @@ var TwilightIdentity = (function () {
 
                 save(uid, pkcs8Pem, _certPem);
                 console.log('[Identity] Generated new identity, uid:', _id);
+                TwilightCrypto.sha256(_certDer).then(function (fp) {
+                    console.log('[Identity] Cert SHA-256:', TwilightCrypto.bytesToHex(fp));
+                });
             }());
 
             return _initPromise;

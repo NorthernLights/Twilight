@@ -23,6 +23,7 @@ var HostDiscovery = (function () {
     var GS_HTTP_PORT     = 47989;
     var CHECK_TIMEOUT    = 5000;   // ms
     var _pendingRemoveId = null;   // host ID awaiting removal confirmation
+    var _pendingUnpairId = null;   // host ID awaiting unpair confirmation
 
     /* ── Utilities ── */
 
@@ -209,6 +210,47 @@ var HostDiscovery = (function () {
         App.showToast('\u201c' + name + '\u201d removed', 'info');
     }
 
+    /* ── Unpair Host ── */
+
+    function openUnpairModal(hostId) {
+        var host = Storage.getHost(hostId);
+        if (!host || !host.paired) return;
+        _pendingUnpairId = hostId;
+        var msgEl = document.getElementById('host-unpair-confirm-msg');
+        if (msgEl) {
+            msgEl.textContent =
+                'Remove Twilight from \u201c' + host.name +
+                '\u2019s paired clients? You will need to re-pair to stream games.';
+        }
+        App.openModal('host-unpair');
+    }
+
+    function doUnpair(hostId) {
+        if (!hostId) return;
+        var host = Storage.getHost(hostId);
+        if (!host) return;
+        var name = host.name;
+
+        /* Fire-and-forget HTTP /unpair – local state update is authoritative */
+        var uid = (typeof TwilightIdentity !== 'undefined' && TwilightIdentity.isReady())
+            ? TwilightIdentity.getUniqueId()
+            : null;
+        if (uid) {
+            fetch('http://' + host.ip + ':' + GS_HTTP_PORT +
+                  '/unpair?uniqueid=' + encodeURIComponent(uid) +
+                  '&devicename=roth'
+            ).catch(function () {});
+        }
+
+        host.paired = false;
+        Storage.saveHost(host);
+        _pendingUnpairId = null;
+        App.closeModal();
+        render();
+        Navigation.focusDefault();
+        App.showToast('Unpaired from \u201c' + name + '\u201d', 'info');
+    }
+
     /* ── Network Scan ── */
 
     var _scanning = false;  // guard against concurrent scan requests
@@ -306,7 +348,7 @@ var HostDiscovery = (function () {
                 if (el.dataset.action === 'scan-network') scanNetwork();
             });
 
-            /* Remove-host modal buttons */
+            /* Remove-host and unpair-host modal buttons */
             var screen = document.getElementById('screen-hosts');
             if (screen) {
                 screen.addEventListener('click', function (e) {
@@ -314,16 +356,28 @@ var HostDiscovery = (function () {
                     if (!el) return;
                     if (el.dataset.action === 'confirm-remove-host') removeHost(_pendingRemoveId);
                     if (el.dataset.action === 'cancel-remove-host')  App.closeModal();
+                    if (el.dataset.action === 'confirm-host-unpair') doUnpair(_pendingUnpairId);
+                    if (el.dataset.action === 'cancel-host-unpair')  App.closeModal();
                 });
             }
 
-            /* RED key (403) on a focused host card opens the remove confirmation */
+            /* Colour-button shortcuts on a focused host card:
+             *   RED  (403) – Remove host from Twilight
+             *   YELLOW (405) – Unpair from Sunshine (paired hosts only)    */
             document.addEventListener('keydown', function (e) {
-                if (e.keyCode !== Keys.RED) return;
                 var active = document.activeElement;
                 if (!active || !active.dataset.hostId) return;
-                e.preventDefault();
-                openRemoveHostModal(active.dataset.hostId);
+
+                if (e.keyCode === Keys.RED) {
+                    e.preventDefault();
+                    openRemoveHostModal(active.dataset.hostId);
+                } else if (e.keyCode === Keys.YELLOW) {
+                    var h = Storage.getHost(active.dataset.hostId);
+                    if (h && h.paired) {
+                        e.preventDefault();
+                        openUnpairModal(active.dataset.hostId);
+                    }
+                }
             });
         },
 

@@ -144,7 +144,8 @@ var TwilightCrypto = (function () {
             return tlv(0x06, new Uint8Array(bytes));
         }
 
-        function utf8Str(s) { return tlv(0x0c, new TextEncoder().encode(s)); }
+        function utf8Str(s)       { return tlv(0x0c, new TextEncoder().encode(s)); }
+        function printableStr(s)  { return tlv(0x13, new TextEncoder().encode(s)); }
 
         function utcTime(d) {
             var p = function (n) { return (n < 10 ? '0' : '') + n; };
@@ -160,15 +161,18 @@ var TwilightCrypto = (function () {
 
         function algId(oidStr) { return seq([oid(oidStr), nullVal()]); }
 
-        /* Distinguished Name: SEQUENCE { SET { SEQUENCE { OID(CN), UTF8String } } } */
+        /* Distinguished Name: SEQUENCE { SET { SEQUENCE { OID(CN), PrintableString } } }
+         * Use PrintableString (0x13) to match OpenSSL MBSTRING_ASC encoding.
+         * Sunshine's X509_cmp compares raw DER bytes; UTF8String (0x0C) vs
+         * PrintableString (0x13) would cause a silent mismatch and unpersisted pairing. */
         function rdnCn(cn) {
-            return seq([setOf([seq([oid('2.5.4.3'), utf8Str(cn)])])]);
+            return seq([setOf([seq([oid('2.5.4.3'), printableStr(cn)])])]);
         }
 
         return {
             seq: seq, setOf: setOf, bitStr: bitStr, nullVal: nullVal,
             ctx0: ctx0, integer: integer, intSmall: intSmall, oid: oid,
-            utf8Str: utf8Str, utcTime: utcTime,
+            utf8Str: utf8Str, printableStr: printableStr, utcTime: utcTime,
             algId: algId, rdnCn: rdnCn,
             SHA256_WITH_RSA: SHA256_WITH_RSA,
             RSA_ENCRYPTION: RSA_ENCRYPTION,

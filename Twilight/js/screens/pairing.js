@@ -177,6 +177,17 @@ var Pairing = (function () {
     async function doPairing(host, pin) {
         var ip = host.ip;
 
+        /* ── Pre-pair cleanup ───────────────────────────────────────────────
+         * Fire-and-forget /unpair for this uniqueid before starting the
+         * handshake.  If a previous pairing attempt left Sunshine with a
+         * stale "pending" state for this uid, the new step 1 may conflict.
+         * The call is non-fatal; it silently succeeds or is ignored by
+         * Sunshine if no such entry exists.                                  */
+        fetch(buildUrl('http', ip, GS_HTTP_PORT, 'unpair', {
+            uniqueid:   TwilightIdentity.getUniqueId(),
+            devicename: DEVICE_NAME,
+        })).catch(function () {});
+
         /* ── AES key derivation ─────────────────
            aesKey = SHA-256(salt || pin_utf8)[0:16]   */
         var salt      = TwilightCrypto.randomBytes(16);
@@ -337,8 +348,55 @@ var Pairing = (function () {
         var s5 = null;
         var s5Error = null;
 
-        /* Attempt 1: Luna pairVerify */
+        /* Luna pairVerify via TwilightServices.
+         *
+         * Two calls are made in sequence:
+         *
+         *   storePairingCert – Writes the client cert + private key to temp
+         *     files inside TwilightServices (mirrors moonlight-tv storing
+         *     client.pem / key.pem on disk for libcurl CURLOPT_SSLCERT /
+         *     CURLOPT_SSLKEY).  Failure is non-fatal; pairVerify falls back
+         *     to inline parameters supplied in the second call.
+         *
+         *   pairVerify – Performs the HTTPS pairchallenge using tls.connect()
+         *     directly (mirrors moonlight-tv's libcurl mutual-TLS flow).
+         *     A TCP probe runs first to distinguish network failures from TLS
+         *     failures.                                                         */
         if (typeof webOS !== 'undefined' && webOS.service) {
+            /* ── storePairingCert ────────────────────────────────────────── */
+            await new Promise(function (resolve) {
+                var done  = false;
+                var timer = setTimeout(function () {
+                    if (!done) { done = true; resolve(); }
+                }, 5000);
+                webOS.service.request('luna://com.twilightstream.client.service', {
+                    method:     'storePairingCert',
+                    parameters: {
+                        certPem: TwilightIdentity.getCertPem(),
+                        keyPem:  TwilightIdentity.getPrivateKeyPem(),
+                    },
+                    onSuccess: function () {
+                        clearTimeout(timer);
+                        if (!done) {
+                            done = true;
+                            console.log('[Pairing] Step 5: cert/key stored in TwilightServices');
+                            resolve();
+                        }
+                    },
+                    onFailure: function (err) {
+                        clearTimeout(timer);
+                        if (!done) {
+                            done = true;
+                            /* Non-fatal: pairVerify uses inline cert/key fallback */
+                            console.warn('[Pairing] Step 5: storePairingCert failed '
+                                + '(will use inline params):', err && err.errorText);
+                            resolve();
+                        }
+                    },
+                });
+            });
+
+            /* ── pairVerify ──────────────────────────────────────────────── */
             try {
                 s5 = await new Promise(function (resolve, reject) {
                     var settled = false;
@@ -352,9 +410,9 @@ var Pairing = (function () {
                             ip:      ip,
                             port:    GS_HTTPS_PORT,
                             params:  pairChallengeParams,
-                            /* TLS mutual-auth: Sunshine verifies the client cert
-                             * presented in the TLS handshake matches what was
-                             * registered in Step 1.                           */
+                            /* certPem / keyPem are fallback for older TwilightServices
+                             * builds that don't have storePairingCert.  The new service
+                             * reads from the temp files written above instead.         */
                             certPem: TwilightIdentity.getCertPem(),
                             keyPem:  TwilightIdentity.getPrivateKeyPem(),
                         },
@@ -363,6 +421,8 @@ var Pairing = (function () {
                             if (settled) return;
                             settled = true;
                             if (!res.xml) { reject(new Error('pairVerify: no XML returned')); return; }
+                            console.log('[Pairing] Step 5: pairVerify service OK → xml:',
+                                res.xml.slice(0, 120));
                             resolve(parseXml(res.xml));
                         },
                         onFailure: function (err) {
@@ -375,44 +435,31 @@ var Pairing = (function () {
                 });
             } catch (e) {
                 s5Error = e;
-                console.warn('[Pairing] Step 5 Luna failed:', e.message, '– trying direct HTTPS');
-            }
-        }
-
-        /* Attempt 2: direct HTTPS fetch.  Will fail in most real deployments:
-         *   • Self-signed Sunshine cert → ERR_CERT_AUTHORITY_INVALID
-         *   • Vibeshine Let's Encrypt cert → ERR_CERT_COMMON_NAME_INVALID (IP)
-         * Kept as a dev-mode / simulator convenience path only.              */
-        if (!s5) {
-            try {
-                s5 = await fetchXml(buildUrl('https', ip, GS_HTTPS_PORT, 'pair', pairChallengeParams), 15000);
-            } catch (e) {
-                s5Error = e;
-                console.warn('[Pairing] Step 5 direct HTTPS failed:', e.message);
+                console.warn('[Pairing] Step 5 Luna pairVerify failed:', e.message);
             }
         }
 
         if (s5) {
-            /* We received an explicit response – honour it */
+            /* Validate the pairchallenge response */
             checkStatus(s5, 5);
             if (xmlStr(s5, 'paired') !== '1') {
                 sendUnpair(ip);
                 throw new Error('Step 5 (HTTPS) refused');
             }
+            console.log('[Pairing] Step 5: pairchallenge confirmed – paired = 1');
         } else {
-            /* Both transport paths failed – pairing cannot complete.
+            /* Luna pairVerify path failed – pairing cannot complete.
              *
              * Sunshine/Vibeshine persists the device to its client database
-             * ONLY after a successful pairchallenge (step 5).  Without it,
-             * /applist returns status 404 and the device stays pending.
+             * ONLY after a successful pairchallenge (step 5) with mutual TLS.
+             * Without it, /applist returns status 404 and the device stays pending.
              *
              * Common causes:
              *   • TwilightServices not installed/running on this device
              *     or Simulator build (build and install the .ipk)
              *   • TLS configuration mismatch (cipher, protocol version)
-             *   • Vibeshine Let's Encrypt cert: hostname mismatch when
-             *     connecting by IP (Luna path uses rejectUnauthorized: false
-             *     to bypass this – ensure TwilightServices is running)       */
+             *   • Vibeshine Let's Encrypt cert – Luna path uses
+             *     rejectUnauthorized: false to bypass hostname check          */
             throw new Error(
                 'Pairing step 5 (HTTPS pairchallenge) failed' +
                 (s5Error ? ': ' + s5Error.message : '') +

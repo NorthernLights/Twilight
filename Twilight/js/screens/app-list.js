@@ -123,7 +123,24 @@ var AppList = (function () {
                 .catch(function (err) {
                     console.error('[AppList] fetch failed:', err);
                     setLoading(false);
-                    showError(err && err.message ? err.message : undefined);
+
+                    /* status 404 means Sunshine does not recognise this client as
+                     * paired – the pairchallenge likely ran but Sunshine did not
+                     * persist the pairing (cert mismatch or stale pending state).
+                     * Reset the local paired flag so the home screen will prompt
+                     * the user to re-pair rather than looping back here.          */
+                    if (_host && err.message && err.message.indexOf('status 404') !== -1) {
+                        console.warn('[AppList] 404 from /applist – resetting paired flag for', _host.name);
+                        _host.paired = false;
+                        Storage.saveHost(_host);
+                        App.showToast(
+                            'Pairing with \u201c' + _host.name + '\u201d is incomplete\u2014please re-pair.',
+                            'warning'
+                        );
+                        setTimeout(function () { App.goBack(); }, 2800);
+                    } else {
+                        showError(err && err.message ? err.message : undefined);
+                    }
                 });
 
             // Parallel: find currently running app (uniqueid needed for accurate response)
