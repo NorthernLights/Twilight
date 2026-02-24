@@ -416,7 +416,8 @@ var Pairing = (function () {
             throw new Error(
                 'Pairing step 5 (HTTPS pairchallenge) failed' +
                 (s5Error ? ': ' + s5Error.message : '') +
-                '.\nEnsure TwilightServices is installed and running on this device.'
+                '.\nEnsure TwilightServices is installed and running.' +
+                ' If it is running, try Settings \u2192 About \u2192 Reset Pairing Identity, then re-pair.'
             );
         }
         /* Pairing complete! */

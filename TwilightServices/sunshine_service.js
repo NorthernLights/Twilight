@@ -29,6 +29,7 @@ var Service = require('webos-service');
 var dgram   = require('dgram');
 var http    = require('http');
 var https   = require('https');
+var tls     = require('tls');
 var net     = require('net');
 var os      = require('os');
 
@@ -426,32 +427,104 @@ service.register('scan', function (message) {
     });
 });
 
+// ── PKCS#8 → PKCS#1 Key Extraction ───────────────────────────────────────────
+
+/**
+ * Extract the inner PKCS#1 RSAPrivateKey DER bytes from a PKCS#8
+ * PrivateKeyInfo PEM string and return a PKCS#1 PEM.
+ *
+ * Some Node.js TLS runtimes bundled with older webOS service SDK versions
+ * do not accept PKCS#8 ("BEGIN PRIVATE KEY") as a TLS client-certificate
+ * key; they require the traditional PKCS#1 ("BEGIN RSA PRIVATE KEY") form.
+ * Converting here is safe because the inner RSAPrivateKey DER is identical
+ * in both formats — we are simply unwrapping the PKCS#8 outer envelope.
+ *
+ * PKCS#8 ASN.1 layout (RFC 5958):
+ *   SEQUENCE {
+ *     INTEGER 0                       – version
+ *     SEQUENCE { OID rsaEncryption }  – algorithm identifier
+ *     OCTET STRING { <PKCS#1 DER> }  – wrapped private key
+ *   }
+ *
+ * Returns the original PKCS#8 PEM unchanged if the structure is not
+ * recognisable (fail-safe: caller still tries the key as-is).
+ */
+function pkcs8ToPkcs1(pem) {
+    try {
+        var b64 = pem.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+        var der = Buffer.from(b64, 'base64');
+        var p   = 0;
+
+        function nextTL() {
+            var tag = der[p++];
+            var l   = der[p++];
+            if (l & 0x80) {
+                var n = l & 0x7f;
+                l = 0;
+                while (n--) l = (l << 8) | der[p++];
+            }
+            return { tag: tag, len: l };
+        }
+
+        var outer = nextTL();  if (outer.tag !== 0x30) return pem;   /* outer SEQUENCE    */
+        var ver   = nextTL();  if (ver.tag   !== 0x02) return pem;   /* version INTEGER   */
+        p += ver.len;
+        var alg   = nextTL();  if (alg.tag   !== 0x30) return pem;   /* algorithm SEQ     */
+        p += alg.len;
+        var oct   = nextTL();  if (oct.tag   !== 0x04) return pem;   /* privateKey OCTET  */
+
+        var inner  = der.slice(p, p + oct.len);
+        var outB64 = inner.toString('base64');
+        var out    = '-----BEGIN RSA PRIVATE KEY-----\n';
+        for (var i = 0; i < outB64.length; i += 64) out += outB64.slice(i, i + 64) + '\n';
+        out += '-----END RSA PRIVATE KEY-----\n';
+        console.log('[Sunshine] pkcs8ToPkcs1: extracted ' + oct.len + '-byte RSA key');
+        return out;
+    } catch (e) {
+        console.warn('[Sunshine] pkcs8ToPkcs1: conversion failed (' + e.message + ') – using key as-is');
+        return pem;
+    }
+}
+
 /**
  * pairVerify – Perform the GameStream/Sunshine HTTPS pairing-challenge step.
  *
- * Sunshine uses a self-signed TLS certificate, which Chrome (and therefore
- * the webOS simulator / TV browser) rejects via fetch().  This method proxies
- * the request through Node.js with rejectUnauthorized: false so the self-
- * signed cert is accepted, without compromising the pairing security (the
- * protocol's RSA + AES cryptographic verification already authenticates the
- * server in steps 1–4).
+ * Sunshine's pairchallenge endpoint (port 47984) uses mutual TLS: the server
+ * requires the client to present the X.509 certificate that was registered in
+ * step 1 of the pairing handshake.  Chrome / webOS's browser fetch() cannot
+ * be used here because:
+ *   • Self-signed Sunshine cert → untrusted CA → ERR_CERT_AUTHORITY_INVALID
+ *   • Vibeshine Let's Encrypt cert → issued for a domain, not the IP address
+ *     used by the client → ERR_CERT_COMMON_NAME_INVALID
+ *
+ * Implementation uses tls.connect() directly for explicit client-cert control.
+ * The private key is converted from PKCS#8 to PKCS#1 before use for
+ * compatibility with all Node.js versions in the webOS service runtime.
+ *
+ * HTTP/1.0 is used intentionally: the server closes the TCP connection after
+ * sending the response body, giving a clean 'end' event without chunked-
+ * transfer-encoding parsing.
  *
  * Request payload:
- *   ip     {string}  Sunshine host IP address
- *   port   {number}  HTTPS port (default: 47984)
- *   params {object}  Query-string parameters (key/value strings)
+ *   ip      {string}  Sunshine host IP address
+ *   port    {number}  HTTPS port (default: 47984)
+ *   params  {object}  Query-string parameters (key/value strings)
+ *   certPem {string}  PEM-encoded client X.509 certificate
+ *   keyPem  {string}  PEM-encoded client private key (PKCS#8 from WebCrypto)
  *
  * Response on success: { returnValue: true, xml: "<root>...</root>" }
  * Response on failure: { returnValue: false, errorText: "...", errorCode: N }
+ *   errorCode 1 – missing required field
+ *   errorCode 2 – overall timeout (12 s)
+ *   errorCode 3 – TLS / socket error (errorText contains Node.js error code)
+ *   errorCode 4 – tls.connect() threw synchronously (e.g. key format error)
+ *   errorCode 5 – TLS handshake OK but server returned empty body
  */
 service.register('pairVerify', function (message) {
     var payload = message.payload || {};
     var ip      = payload.ip;
     var port    = (typeof payload.port === 'number') ? payload.port : 47984;
     var params  = payload.params || {};
-    /* TLS mutual-auth credentials (optional but required by Sunshine for
-     * pairchallenge: Sunshine verifies the presented cert matches what was
-     * registered in step 1 of the pairing handshake).                      */
     var certPem = (typeof payload.certPem === 'string' && payload.certPem) ? payload.certPem : null;
     var keyPem  = (typeof payload.keyPem  === 'string' && payload.keyPem)  ? payload.keyPem  : null;
 
@@ -460,7 +533,6 @@ service.register('pairVerify', function (message) {
         return;
     }
 
-    /* Build query string */
     var qs = Object.keys(params).map(function (k) {
         return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
     }).join('&');
@@ -472,48 +544,95 @@ service.register('pairVerify', function (message) {
         message.respond(obj);
     }
 
-    var options = {
-        hostname:           ip,
-        port:               port,
-        path:               '/pair?' + qs,
-        method:             'GET',
-        timeout:            12000,
-        /* Accept Sunshine's self-signed OR Let's Encrypt server certificate.
-           rejectUnauthorized skips CA chain validation; checkServerIdentity
-           skips the hostname check (needed when connecting by IP to a host
-           whose Let's Encrypt cert was issued for a domain name).
-           Security is provided by the RSA/AES handshake in steps 1–4.      */
+    /* Convert PKCS#8 → PKCS#1 for TLS client-cert compatibility.
+     * WebCrypto exports as PKCS#8; some webOS service Node.js runtimes only
+     * accept the traditional PKCS#1 ("RSA PRIVATE KEY") form for TLS.       */
+    var keyForTls = keyPem ? pkcs8ToPkcs1(keyPem) : null;
+
+    var tlsOpts = {
+        host:                ip,
+        port:                port,
         rejectUnauthorized:  false,
         checkServerIdentity: function () { return undefined; },
     };
+    if (certPem)   tlsOpts.cert = certPem;
+    if (keyForTls) tlsOpts.key  = keyForTls;
 
-    /* Attach the client certificate/key when provided so that the TLS
-     * handshake presents our identity to Sunshine.  Sunshine's pairchallenge
-     * endpoint verifies the client cert matches the one from step 1.        */
-    if (certPem) options.cert = certPem;
-    if (keyPem)  options.key  = keyPem;
+    var keyType = keyForTls
+        ? (keyForTls.indexOf('RSA PRIVATE KEY') >= 0 ? 'PKCS#1' : 'PKCS#8')
+        : 'none';
+    console.log('[Sunshine] pairVerify → tls.connect',
+        ip + ':' + port, '| cert:', !!certPem, '| key:', keyType);
 
-    console.log('[Sunshine] pairVerify →', 'https://' + ip + ':' + port + '/pair?' + qs);
+    var rawBuf = '';
+    var killed = false;
+    var socket;   /* declared before the timer so the guard below is safe */
 
-    var req = https.request(options, function (res) {
-        var body = '';
-        res.on('data', function (chunk) { body += chunk; });
-        res.on('end',  function () {
-            console.log('[Sunshine] pairVerify ←', body.slice(0, 200));
-            reply({ returnValue: true, xml: body });
+    /* Hard deadline covering both the TLS handshake and HTTP response.
+     * socket may be undefined if tls.connect() threw, hence the guard.      */
+    var overallTimer = setTimeout(function () {
+        killed = true;
+        if (socket) socket.destroy();
+        reply({ returnValue: false, errorText: 'pairVerify timed out (12 s)', errorCode: 2 });
+    }, 12000);
+
+    /* Wrap tls.connect in try/catch: in some Node.js versions a bad key
+     * format (or other invalid option) throws synchronously rather than
+     * emitting an 'error' event.  Without this the handler exits without
+     * calling reply(), leaving the Luna caller waiting until its own timer
+     * fires – which manifests as "service call timed out" in the UI.        */
+    try {
+        socket = tls.connect(tlsOpts, function () {
+            /* This callback fires ONLY after the TLS handshake succeeds.
+             * Any rejection by the server (bad cert, wrong version, etc.)
+             * goes to socket.on('error') instead.                          */
+            var ci = socket.getCipher ? socket.getCipher() : null;
+            console.log('[Sunshine] pairVerify: TLS handshake OK',
+                '| cipher:', ci ? ci.name : 'n/a',
+                '| cert sent:', !!certPem);
+
+            /* HTTP/1.0 forces the server to close after the response body. */
+            socket.write(
+                'GET /pair?' + qs + ' HTTP/1.0\r\n' +
+                'Host: ' + ip + ':' + port + '\r\n' +
+                '\r\n'
+            );
         });
-    });
 
-    req.on('timeout', function () {
-        req.destroy();
-        reply({ returnValue: false, errorText: 'pairVerify timed out', errorCode: 2 });
-    });
+        socket.on('data', function (chunk) {
+            rawBuf += chunk.toString('utf8');
+        });
 
-    req.on('error', function (e) {
-        reply({ returnValue: false, errorText: e.message, errorCode: 3 });
-    });
+        socket.on('end', function () {
+            clearTimeout(overallTimer);
+            var sep  = rawBuf.indexOf('\r\n\r\n');
+            var body = (sep >= 0) ? rawBuf.slice(sep + 4) : rawBuf;
+            console.log('[Sunshine] pairVerify ← body:', body.slice(0, 200));
+            if (!body.trim()) {
+                reply({ returnValue: false,
+                    errorText: 'pairVerify: server closed connection with empty body',
+                    errorCode: 5 });
+            } else {
+                reply({ returnValue: true, xml: body });
+            }
+        });
 
-    req.end();
+        socket.on('error', function (e) {
+            if (killed) return;
+            clearTimeout(overallTimer);
+            console.error('[Sunshine] pairVerify error:', e.code || '', e.message);
+            reply({ returnValue: false,
+                errorText: (e.code ? e.code + ': ' : '') + e.message,
+                errorCode: 3 });
+        });
+
+    } catch (tlsErr) {
+        clearTimeout(overallTimer);
+        console.error('[Sunshine] pairVerify: tls.connect threw:', tlsErr.message);
+        reply({ returnValue: false,
+            errorText: 'TLS init: ' + tlsErr.message,
+            errorCode: 4 });
+    }
 });
 
 /**
